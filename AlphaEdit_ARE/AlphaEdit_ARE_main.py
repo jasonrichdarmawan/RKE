@@ -12,18 +12,24 @@ import argparse
 
 import numpy as np
 import os
-from transformers.modeling_attn_mask_utils import AttentionMaskConverter,_prepare_4d_causal_attention_mask
+from transformers.modeling_attn_mask_utils import (
+    AttentionMaskConverter,
+    _prepare_4d_causal_attention_mask,
+)
 from .AlphaEdit_ARE_hparams import AlphaEditAREHyperParams
+
 COV_CACHE = {}
+
+
 def compute_ks(
     model: AutoModelForCausalLM,
     tok: AutoTokenizer,
     batch_data: list,
     hparams: AlphaEditAREHyperParams,
     layer: int,
-    idxs_dict:dict,
+    idxs_dict: dict,
 ):
-    input_ids = tok(batch_data, padding=True,return_tensors="pt").to("cuda")
+    input_ids = tok(batch_data, padding=True, return_tensors="pt").to("cuda")
     zs_out_dict = {}
 
     with torch.no_grad():
@@ -34,15 +40,15 @@ def compute_ks(
             retain_output=True,
             detach=True,
             clone=True,
-            ) as tr:
-                _ = model(**input_ids)
-                #layer_in_ks = tr.input #(bs:seq:h_dim)
-                zs_out = tr.output#(bs:seq:h_dim)
+        ) as tr:
+            _ = model(**input_ids)
+            # layer_in_ks = tr.input #(bs:seq:h_dim)
+            zs_out = tr.output  # (bs:seq:h_dim)
     zs_out = zs_out[0] if type(zs_out) is tuple else zs_out
     zs_out_list = []
     for k, idxs in idxs_dict.items():
         for idx in idxs:
-            zs_out_list.append(zs_out[k,idx])
+            zs_out_list.append(zs_out[k, idx])
     zs_out = torch.stack(zs_out_list, dim=1)
     return zs_out
 
@@ -50,9 +56,10 @@ def compute_ks(
 def apply_AlphaEdit_ARE_to_model(
     model: AutoModelForCausalLM,
     tok: AutoTokenizer,
-    hparams:AlphaEditAREHyperParams,
-    batch_data:list,
-    P = None,):
+    hparams: AlphaEditAREHyperParams,
+    batch_data: list,
+    P=None,
+):
 
     weights = {
         f"{hparams.rewrite_module_tmp.format(layer)}.weight": nethook.get_parameter(
@@ -63,30 +70,19 @@ def apply_AlphaEdit_ARE_to_model(
     # Save old weights for future restoration
     weights_copy = {k: v.detach().clone() for k, v in weights.items()}
 
-
-
-
     z_layer = hparams.layers[-1]
     all_zs_list = []
     idxs_dict = {}
     for k, data in enumerate(batch_data):
-        idxs_list, zs_list = compute_z(
-            model,
-            tok,
-            data,
-            z_layer,
-            hparams
-        )
+        idxs_list, zs_list = compute_z(model, tok, data, z_layer, hparams)
         all_zs_list.extend(zs_list)
         idxs_dict[k] = idxs_list
-    zs = torch.stack(all_zs_list, dim = 1)
-    batch_question_ans = [
-        i['question'] + i['answer'] for i in batch_data
-    ]
-    
+    zs = torch.stack(all_zs_list, dim=1)
+    batch_question_ans = [i["question"] + i["answer"] for i in batch_data]
+
     # Insert
     for i, layer in enumerate(hparams.layers):
-        #print(f"\n\nLAYER {layer}\n")
+        # print(f"\n\nLAYER {layer}\n")
         contexts_tok = tok(batch_question_ans, padding=True, return_tensors="pt").to(
             next(model.parameters()).device
         )
@@ -100,12 +96,11 @@ def apply_AlphaEdit_ARE_to_model(
                 clone=True,
             ) as tr:
                 _ = model(**contexts_tok)
-                layer_in_ks = tr.input #(bs:seq:h_dim)
-                layer_out_ks = tr.output#(bs:seq:h_dim)
+                layer_in_ks = tr.input  # (bs:seq:h_dim)
+                layer_out_ks = tr.output  # (bs:seq:h_dim)
         layer_out_ks = layer_out_ks[0] if type(layer_out_ks) is tuple else layer_out_ks
-        
 
-        cur_zs = compute_ks(model, tok,batch_question_ans, hparams, z_layer, idxs_dict)
+        cur_zs = compute_ks(model, tok, batch_question_ans, hparams, z_layer, idxs_dict)
         targets = zs - cur_zs
         print("z error", torch.linalg.norm(targets, dim=0).mean())
         # ex_tok = tok(ex_data, padding=True, return_tensors="pt").to(
@@ -123,10 +118,12 @@ def apply_AlphaEdit_ARE_to_model(
         layer_ks = torch.stack(ks_list, dim=1)
         layer_kp = torch.stack(kp_list, dim=1)
 
-
         resid = targets / (len(hparams.layers) - i)  # Distribute residual across layers
         upd_matrix = torch.linalg.solve(
-                P[i,:,:].cuda() @ (layer_ks @ layer_ks.T + layer_kp @ layer_kp.T)  + hparams.L2*torch.eye(layer_ks.shape[0], dtype=torch.float,device="cuda"), P[i,:,:].cuda() @ layer_ks @ resid.T
+            P[i, :, :].cuda() @ (layer_ks @ layer_ks.T + layer_kp @ layer_kp.T)
+            + hparams.L2
+            * torch.eye(layer_ks.shape[0], dtype=torch.float, device="cuda"),
+            P[i, :, :].cuda() @ layer_ks @ resid.T,
         )
         # Adjust update matrix shape
         weight_name = f"{hparams.rewrite_module_tmp.format(layer)}.weight"
@@ -138,11 +135,12 @@ def apply_AlphaEdit_ARE_to_model(
         with torch.no_grad():
             weights[weight_name][...] = weights_copy[weight_name] + upd_matrix.float()
         # Clear GPU memory
-        for x in [layer_ks,layer_kp, cur_zs, targets, layer_in_ks, layer_out_ks,P]:
+        for x in [layer_ks, layer_kp, cur_zs, targets, layer_in_ks, layer_out_ks, P]:
             x.cpu()
             del x
         torch.cuda.empty_cache()
     return weights_copy
+
 
 def get_cov(
     model: AutoModelForCausalLM,

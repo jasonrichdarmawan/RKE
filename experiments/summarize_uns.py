@@ -6,6 +6,7 @@ from tqdm import tqdm
 import argparse
 import sys
 import os
+import pprint
 sys.setrecursionlimit(2000)
 def calculate_metrics(data):
     for i in data:
@@ -178,5 +179,5 @@ if __name__ == "__main__":
         # with open('data_memit.json', 'w') as file:
         #     json.dump(temp_result, file)
         print("***********Result**************")
-        print(matrics)
+        pprint.pprint(matrics)
 

@@ -1,4 +1,5 @@
 import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "1,2"
 from pathlib import Path
 import torch
 from datasets import load_dataset
@@ -34,9 +35,13 @@ def main():
     def aa(*args, **kwargs):
         parser.add_argument(*args, **kwargs)
 
-    aa("--model_name", default="/data/jianghc/llama3-8b-instruct", choices=["gpt2-xl", "EleutherAI/gpt-j-6B","/data/jianghc/llama3-8b-instruct"])
+    aa(
+        "--model_name",
+        # default="/data/jianghc/llama3-8b-instruct",
+        # choices=["gpt2-xl", "EleutherAI/gpt-j-6B", "/data/jianghc/llama3-8b-instruct"],
+    )
     aa("--dataset", default="wikipedia", choices=["wikitext", "wikipedia"])
-    aa("--layers", default=[4,5,6,7,8], type=lambda x: list(map(int, x.split(","))))
+    aa("--layers", default=[4, 5, 6, 7, 8], type=lambda x: list(map(int, x.split(","))))
     aa("--to_collect", default=["mom2"], type=lambda x: x.split(","))
     aa("--sample_size", default=100000, type=lambda x: None if x == "all" else int(x))
     aa("--batch_tokens", default=None, type=lambda x: None if x == "any" else int(x))
@@ -45,8 +50,13 @@ def main():
     aa("--download", default=1, type=int, choices=[0, 1])
     args = parser.parse_args()
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name)
-    model = AutoModelForCausalLM.from_pretrained(args.model_name).eval().cuda()
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.model_name,
+    )
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model_name,
+        device_map="auto",
+    ).eval()
     set_requires_grad(False, model)
 
     for layer_num in args.layers:
@@ -79,7 +89,7 @@ def layer_stats(
     layer_name,
     stats_dir,
     ds_name,
-    to_collect,
+    to_collect: list[str],
     model_name=None,
     sample_size=None,
     precision=None,
@@ -87,7 +97,7 @@ def layer_stats(
     download=True,
     progress=tqdm,
     force_recompute=False,
-    hparams=None
+    hparams=None,
 ):
     """
     Function to load or compute cached stats.
@@ -100,25 +110,26 @@ def layer_stats(
         # raw_ds = {'train': raw_ds}
         raw_ds = load_dataset(
             ds_name,
-            dict(wikitext="wikitext-103-raw-v1", wikipedia="20220301.en")[ds_name]
+            dict(wikitext="wikitext-103-raw-v1", wikipedia="20220301.en")[ds_name],
         )
-        if hasattr(model.config, 'n_positions'):
+        if hasattr(model.config, "n_positions"):
             maxlen = model.config.n_positions
-        elif hasattr(model.config, 'max_sequence_length'):
+        elif hasattr(model.config, "max_sequence_length"):
             maxlen = model.config.max_sequence_length
-        elif hasattr(model.config, 'max_position_embeddings'):
+        elif hasattr(model.config, "max_position_embeddings"):
+            # meta-llama/Meta-Llama-3-8B-Instruct
             maxlen = model.config.max_position_embeddings
-        elif hasattr(model.config,'seq_length'):
+        elif hasattr(model.config, "seq_length"):
             maxlen = model.config.seq_length
         else:
             raise NotImplementedError
-                
-        if hasattr(model.config, 'model_type') and 'mistral' in model.config.model_type:
-            if hasattr(model.config, 'sliding_window') and model.config.sliding_window:
+
+        if hasattr(model.config, "model_type") and "mistral" in model.config.model_type:
+            if hasattr(model.config, "sliding_window") and model.config.sliding_window:
                 maxlen = model.config.sliding_window or 4096
             else:
                 maxlen = 4096
-        if hasattr(model.config, 'model_type') and 'qwen2' in model.config.model_type:
+        if hasattr(model.config, "model_type") and "qwen2" in model.config.model_type:
             maxlen = 4096
 
         if batch_tokens is not None and batch_tokens < maxlen:
@@ -127,24 +138,24 @@ def layer_stats(
 
     # Continue with computation of statistics
     batch_size = 100  # Examine this many dataset texts at once
-    if hasattr(model.config, 'n_positions'):
+    if hasattr(model.config, "n_positions"):
         npos = model.config.n_positions
-    elif hasattr(model.config, 'max_sequence_length'):
+    elif hasattr(model.config, "max_sequence_length"):
         npos = model.config.max_sequence_length
-    elif hasattr(model.config, 'max_position_embeddings'):
+    elif hasattr(model.config, "max_position_embeddings"):
         npos = model.config.max_position_embeddings
-    elif hasattr(model.config,'seq_length'):
+    elif hasattr(model.config, "seq_length"):
         npos = model.config.seq_length
     else:
         raise NotImplementedError
-        
-    if hasattr(model.config, 'model_type') and 'mistral' in model.config.model_type:
-        if hasattr(model.config, 'sliding_window') and model.config.sliding_window:
+
+    if hasattr(model.config, "model_type") and "mistral" in model.config.model_type:
+        if hasattr(model.config, "sliding_window") and model.config.sliding_window:
             npos = model.config.sliding_window or 4096
         else:
             npos = 4096
-    if hasattr(model.config, 'model_type') and 'qwen2' in model.config.model_type:
-            npos = 4096
+    if hasattr(model.config, "model_type") and "qwen2" in model.config.model_type:
+        npos = 4096
 
     if batch_tokens is None:
         batch_tokens = npos * 3  # Sort and divide into batches with this many tokens
@@ -153,7 +164,7 @@ def layer_stats(
     dtype = getattr(torch, precision)
     size_suffix = "" if sample_size is None else f"_{sample_size}"
     if batch_tokens < npos:
-        size_suffix = "_t{batch_tokens}" + size_suffix
+        size_suffix = f"_t{batch_tokens}" + size_suffix
     if model_name is None:
         # model_name = model.config._name_or_path.replace("/", "_")
         model_name = model.config._name_or_path.rsplit("/")[-1]
@@ -178,7 +189,7 @@ def layer_stats(
         collate_fn=length_collation(batch_tokens),
         pin_memory=True,
         random_sample=1,
-        num_workers=2,
+        # num_workers=2,
     )
     batch_count = -(-(sample_size or len(ds)) // batch_size)
     with torch.no_grad():
@@ -194,6 +205,7 @@ def layer_stats(
                 feats = feats.to(dtype=dtype)
                 stat.add(feats)
     return stat
+
 
 if __name__ == "__main__":
     main()

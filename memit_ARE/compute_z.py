@@ -6,6 +6,10 @@ from .memit_ARE_hparams import MEMITAREHyperParams
 from util import nethook
 import nltk
 
+from torch import Tensor
+from jaxtyping import Float, jaxtyped
+from beartype import beartype as typechecker
+
 
 def compute_z(
     model: AutoModelForCausalLM,
@@ -13,7 +17,7 @@ def compute_z(
     data: Dict,
     layer: int,
     hparams: MEMITAREHyperParams,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> Tuple[list[int], list[Float[Tensor, "h_dim"]]]:
     """
     Computes the value (right) vector for the rank-1 update.
     Runs a simple optimization procedure.
@@ -29,26 +33,24 @@ def compute_z(
     except LookupError as _:
         lm_b = next(model.parameters()).new_zeros(model.config.vocab_size)
 
-    #print("Computing right vector (v)")
+    # print("Computing right vector (v)")
 
     # Tokenize target into list of int token IDs
-    target_ids = tok(data["answer"], return_tensors="pt").to("cuda")[
-        "input_ids"
-    ][0]  
-    
+    target_ids = tok(data["answer"], return_tensors="pt").to("cuda")["input_ids"][0]
+
     if target_ids[0] == tok.bos_token_id or target_ids[0] == tok.unk_token_id:
         target_ids = target_ids[1:]
-    
+
     input_tok = tok(
-        [data["question"]],  
+        [data["question"]],
         return_tensors="pt",
         padding=True,
     ).to("cuda")
 
-    cur_input_ids = input_tok['input_ids'] 
-    all_delta = []
-    all_target = []
-    all_idxs = []
+    cur_input_ids = input_tok["input_ids"] # (bs:seq)
+    all_delta: list[tuple[list[int], Float[Tensor, "h_dim"]]] = []
+    all_target: list[Float[Tensor, "h_dim"]] = []
+    all_idxs: list[int] = []
     # ans_sen = nltk.tokenize.sent_tokenize(data["answer"], language='english')
     # cur_sen = ""
     # for i,sen in enumerate(ans_sen):
@@ -62,71 +64,97 @@ def compute_z(
     #     #     continue
     #     input_ids = torch.cat([cur_input_ids, torch.unsqueeze(current_target_ids[:-1], dim=0)], dim=1)
     #     cur_input_ids = torch.cat([cur_input_ids, torch.unsqueeze(current_target_ids, dim=0)], dim=1)
-        
 
     start = 0
     while start < len(target_ids):
         end = start + hparams.window_size
         if end > len(target_ids):
             end = len(target_ids)
-        current_target_ids = target_ids[start:end]
+        current_target_ids = target_ids[start:end] # (t_len)
         if start > 0:
-            input_ids = torch.cat([cur_input_ids, torch.unsqueeze(current_target_ids[hparams.overlap:-1], dim=0)], dim=1)
-            cur_input_ids = torch.cat([cur_input_ids, torch.unsqueeze(current_target_ids[hparams.overlap:], dim=0)], dim=1)
+            input_ids = torch.cat(
+                [
+                    cur_input_ids,
+                    torch.unsqueeze(current_target_ids[hparams.overlap : -1], dim=0),
+                ],
+                dim=1,
+            )
+            cur_input_ids = torch.cat(
+                [
+                    cur_input_ids,
+                    torch.unsqueeze(current_target_ids[hparams.overlap :], dim=0),
+                ],
+                dim=1,
+            )
         else:
-            input_ids = torch.cat([cur_input_ids, torch.unsqueeze(current_target_ids[:-1], dim=0)], dim=1)
-            cur_input_ids = torch.cat([cur_input_ids, torch.unsqueeze(current_target_ids, dim=0)], dim=1)
-        
+            input_ids = torch.cat(
+                [cur_input_ids, torch.unsqueeze(current_target_ids[:-1], dim=0)], dim=1
+            ) # (bs:seq)
+            cur_input_ids = torch.cat(
+                [cur_input_ids, torch.unsqueeze(current_target_ids, dim=0)], dim=1
+            )
         start += hparams.window_size - hparams.overlap
-        
+
+        # it act as a mask that identifies the positions in the input
+        # sequence where them odel should compute the loss
         rewriting_targets = torch.tensor(-100, device="cuda").repeat(
             1, len(input_ids[0])
-        )
-   
-        ex_len = len(input_ids[0])
-    
-        rewriting_targets[0, ex_len - len(current_target_ids) : ex_len] = current_target_ids
+        ) # shape (1:seq)
 
+        ex_len = len(input_ids[0])
+
+        rewriting_targets[0, ex_len - len(current_target_ids) : ex_len] = (
+            current_target_ids
+        )
 
         lookup_idxs = [ex_len - len(current_target_ids)]
-    
+
         loss_layer = max(hparams.v_loss_layer, layer)
-    
-        if hasattr(model.config, 'n_embd'):
-            delta = torch.zeros((model.config.n_embd,), requires_grad=True, device="cuda")
-        elif hasattr(model.config, 'hidden_size'):
-            delta = torch.zeros((model.config.hidden_size,), requires_grad=True, device="cuda")
+
+        if hasattr(model.config, "n_embd"):
+            delta = torch.zeros(
+                (model.config.n_embd,), requires_grad=True, device="cuda"
+            )
+        elif hasattr(model.config, "hidden_size"):
+            device = next(nethook.get_module(model, hparams.layer_module_tmp.format(layer)).parameters()).device
+            delta = torch.zeros(
+                (model.config.hidden_size,), requires_grad=True, device=device
+            )
         else:
             raise NotImplementedError
         target_init = None
-    
-        def edit_output_fn(cur_out, cur_layer):
-            nonlocal target_init  
+
+        # @jaxtyped(typechecker=typechecker)
+        def edit_output_fn(
+            cur_out: Float[Tensor, "batch seq h_dim"], 
+            cur_layer: str
+        ) -> Float[Tensor, "batch seq h_dim"]:
+            nonlocal target_init
 
             if cur_layer == hparams.layer_module_tmp.format(layer):
-                
+
                 if target_init is None:
-                
-                    target_init = cur_out[0][0, lookup_idxs[0]].detach().clone()
+
+                    target_init = cur_out[0, lookup_idxs[0]].detach().clone()
 
                 for idxs_pre, delta_pre in all_delta:
                     for i, idx in enumerate(idxs_pre):
-                        if len(idxs_pre)!=len(cur_out[0]):
-                            cur_out[0][idx, i, :] += delta_pre
+                        if len(idxs_pre) != cur_out.shape[0]:
+                            cur_out[idx, i, :] += delta_pre
                         else:
-                            cur_out[0][i, idx, :] += delta_pre
+                            cur_out[i, idx, :] += delta_pre
                 for i, idx in enumerate(lookup_idxs):
-                    
-                    if len(lookup_idxs)!=len(cur_out[0]):
-                        cur_out[0][idx, i, :] += delta
+
+                    if len(lookup_idxs) != cur_out.shape[0]:
+                        cur_out[idx, i, :] += delta
                     else:
-                        cur_out[0][i, idx, :] += delta
+                        cur_out[i, idx, :] += delta
 
             return cur_out
 
         # Optimizer
         opt = torch.optim.Adam([delta], lr=hparams.v_lr)
-        nethook.set_requires_grad(False, model)  
+        nethook.set_requires_grad(False, model)
 
         # Execute optimization
         for it in range(hparams.v_num_grad_steps):
@@ -144,39 +172,49 @@ def compute_z(
                 edit_output=edit_output_fn,
             ) as tr:
                 logits = model(input_ids).logits
-                
 
             # Compute loss on rewriting targets
 
-            output=tr[hparams.layer_module_tmp.format(loss_layer)].output[0]  
-            if output.shape[1]!=rewriting_targets.shape[1]:
-                output=torch.transpose(output, 0, 1)
-            full_repr =  output
+            output = tr[hparams.layer_module_tmp.format(loss_layer)].output
+            if output.shape[1] != rewriting_targets.shape[1]:
+                output = torch.transpose(output, 0, 1)
+            full_repr = output
 
-            log_probs = torch.log_softmax(ln_f(full_repr) @ lm_w.to(full_repr.device) + lm_b.to(full_repr.device), dim=2)
+            log_probs = torch.log_softmax(
+                ln_f(full_repr) @ lm_w.to(full_repr.device) + lm_b.to(full_repr.device),
+                dim=2,
+            ) # (bs:seq:vocab_size)
             loss = torch.gather(
                 log_probs,
                 2,
-                torch.where(rewriting_targets != -100, rewriting_targets, 0).unsqueeze(2).to(log_probs.device),
-            ).squeeze(2)
+                torch.where(rewriting_targets != -100, rewriting_targets, 0)
+                .unsqueeze(2)
+                .to(log_probs.device),
+            ).squeeze(2) # (bs:seq)
             mask = (rewriting_targets != -100).float()
 
             # Aggregate total losses
-            nll_loss_each = -(loss * mask.to(loss.device)).sum(1) / current_target_ids.size(0)
-            nll_loss = nll_loss_each.mean()
-            
+            nll_loss_each = -(loss * mask.to(loss.device)).sum(
+                dim=1
+            ) / current_target_ids.size(0) # (bs)
+            nll_loss = nll_loss_each.mean() # (1)
+
+            # penalize large changes
+            # avoids overfitting to the specific target tokens
+            # in the rewriting_targets
             weight_decay = hparams.v_weight_decay * (
                 torch.norm(delta) / torch.norm(target_init) ** 2
             )
             # weight_decay = hparams.v_weight_decay * torch.norm(delta) ** 2
             loss = nll_loss + weight_decay.to(nll_loss.device)
             print(
-            f"loss {np.round(loss.item(), 3)} = {np.round(nll_loss.item(), 3)}  + {np.round(weight_decay.item(), 3)} "
-            # f"avg prob of [{cur_sen}] "
-            f"{torch.exp(-nll_loss_each).mean().item()}"
+                f"loss {np.round(loss.item(), 3)} = {np.round(nll_loss.item(), 3)}  + {np.round(weight_decay.item(), 3)} "
+                # f"avg prob of [{cur_sen}] "
+                # average probability of the target token across the bach
+                f"{torch.exp(-nll_loss_each).mean().item() * 100:.2f}%"
             )
             if loss < 1e-2:
-               break
+                break
 
             if it == hparams.v_num_grad_steps - 1:
                 break
@@ -186,21 +224,18 @@ def compute_z(
             opt.step()
 
             # Project within L2 ball
+            # prevent the solution from deviating too far from the target_init
             max_norm = hparams.clamp_norm_factor * target_init.norm()
             if delta.norm() > max_norm:
                 with torch.no_grad():
                     delta[...] = delta * max_norm / delta.norm()
         # cur_sen = ""
-        target = target_init + delta  
-        all_delta.append((lookup_idxs ,delta.clone()))
+        target = target_init + delta
+        all_delta.append((lookup_idxs, delta.clone()))
         all_target.append(target)
         all_idxs.append(lookup_idxs[0])
         print(
-        f"Iteration {len(all_delta)}: Init norm {target_init.norm()} | Delta norm {delta.norm()} | Target norm {target.norm()}"
-    )
+            f"Iteration {len(all_delta)}: Init norm {target_init.norm()} | Delta norm {delta.norm()} | Target norm {target.norm()}"
+        )
 
     return all_idxs, all_target
-
-
-
-

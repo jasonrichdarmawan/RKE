@@ -285,9 +285,11 @@ def hierarchical_subsequence(
     # A = current level short name of A.
     # AN = full name for recursive descent if not innermost.
     (F, FN), (L, LN), (A, AN), (U, UN) = [
-        (d[depth], (None if len(d) == depth + 1 else d))
-        if d is not None
-        else (None, None)
+        (
+            (d[depth], (None if len(d) == depth + 1 else d))
+            if d is not None
+            else (None, None)
+        )
         for d in [first, last, after, upto]
     ]
     for name, layer in sequential._modules.items():

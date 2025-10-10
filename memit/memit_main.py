@@ -12,9 +12,15 @@ import argparse
 
 import numpy as np
 import os
-from transformers.modeling_attn_mask_utils import AttentionMaskConverter,_prepare_4d_causal_attention_mask
+from transformers.modeling_attn_mask_utils import (
+    AttentionMaskConverter,
+    _prepare_4d_causal_attention_mask,
+)
 from .memit_hparams import MEMITHyperParams
+
 COV_CACHE = {}
+
+
 def compute_ks(
     model: AutoModelForCausalLM,
     tok: AutoTokenizer,
@@ -22,8 +28,8 @@ def compute_ks(
     hparams: MEMITHyperParams,
     layer: int,
 ):
-    input_ids = tok(batch_data, padding=True,return_tensors="pt").to("cuda")
-    idxs = [i.sum()-1 for i in input_ids['attention_mask']]
+    input_ids = tok(batch_data, padding=True, return_tensors="pt").to("cuda")
+    idxs = [i.sum() - 1 for i in input_ids["attention_mask"]]
     with torch.no_grad():
         with nethook.Trace(
             module=model,
@@ -32,24 +38,24 @@ def compute_ks(
             retain_output=True,
             detach=True,
             clone=True,
-            ) as tr:
-                _ = model(**input_ids)
-                #layer_in_ks = tr.input #(bs:seq:h_dim)
-                zs_out = tr.output#(bs:seq:h_dim)
+        ) as tr:
+            _ = model(**input_ids)
+            # layer_in_ks = tr.input #(bs:seq:h_dim)
+            zs_out = tr.output  # (bs:seq:h_dim)
     zs_out = zs_out[0] if type(zs_out) is tuple else zs_out
-    zs_out_list=[]
+    zs_out_list = []
     for i in range(len(zs_out)):
-        zs_out_list.append(zs_out[i,idxs[i]])
-    zs_out =torch.stack(zs_out_list,dim=0)
-    return zs_out,idxs
+        zs_out_list.append(zs_out[i, idxs[i]])
+    zs_out = torch.stack(zs_out_list, dim=0)
+    return zs_out, idxs
 
 
 def apply_memit_to_model(
     model: AutoModelForCausalLM,
     tok: AutoTokenizer,
-    hparams:MEMITHyperParams,
-    batch_data:list,
-    ):
+    hparams: MEMITHyperParams,
+    batch_data: list,
+):
 
     weights = {
         f"{hparams.rewrite_module_tmp.format(layer)}.weight": nethook.get_parameter(
@@ -60,14 +66,11 @@ def apply_memit_to_model(
     # Save old weights for future restoration
     weights_copy = {k: v.detach().clone() for k, v in weights.items()}
 
-
-
-
     z_layer = hparams.layers[-1]
     z_list = []
     for data in batch_data:
-        
-        cur_z = compute_z(   
+
+        cur_z = compute_z(
             model,
             tok,
             data,
@@ -76,12 +79,15 @@ def apply_memit_to_model(
         )
 
         z_list.append(cur_z)
-    zs = torch.stack(z_list, dim=0)#(bs,h_dim)
-    batch_question = [i['question'] for i in batch_data]
-    
+    # zs: the desired output representations for each new fact (i.e., V_1 in the paper)
+    # cur_zs: the current output representations from the model for each new fact (i.e., W K_1 in the paper)
+    # targets is V_1 - W K_1
+    zs = torch.stack(z_list, dim=0)  # (bs,h_dim)
+    batch_question = [i["question"] for i in batch_data]
+
     # Insert
     for i, layer in enumerate(hparams.layers):
-        #print(f"\n\nLAYER {layer}\n")
+        # print(f"\n\nLAYER {layer}\n")
         contexts_tok = tok(batch_question, padding=True, return_tensors="pt").to(
             next(model.parameters()).device
         )
@@ -95,17 +101,16 @@ def apply_memit_to_model(
                 clone=True,
             ) as tr:
                 _ = model(**contexts_tok)
-                layer_in_ks = tr.input #(bs:seq:h_dim)
-                layer_out_ks = tr.output#(bs:seq:h_dim)
+                layer_in_ks = tr.input  # (bs:seq:h_dim)
+                layer_out_ks = tr.output  # (bs:seq:h_dim)
         layer_out_ks = layer_out_ks[0] if type(layer_out_ks) is tuple else layer_out_ks
-        
 
-        cur_zs, idxs = compute_ks(model, tok,batch_question, hparams, z_layer)
+        cur_zs, idxs = compute_ks(model, tok, batch_question, hparams, z_layer)
         targets = zs - cur_zs
         print("z error", torch.linalg.norm(targets, dim=1).mean())
         ks_list = []
         for i in range(len(idxs)):
-            ks_list.append(layer_in_ks[i,idxs[i]])
+            ks_list.append(layer_in_ks[i, idxs[i]])
         layer_ks = torch.stack(ks_list, dim=1)
         force_recompute = False
         # force_recompute = layer != hparams.layers[0]
@@ -114,17 +119,17 @@ def apply_memit_to_model(
             tok,
             hparams.rewrite_module_tmp.format(layer),
             hparams.mom2_dataset,
-            hparams.mom2_n_samples
-            if not force_recompute
-            else hparams.mom2_n_samples // 10,
+            (
+                hparams.mom2_n_samples
+                if not force_recompute
+                else hparams.mom2_n_samples // 10
+            ),
             hparams.mom2_dtype,
             force_recompute=force_recompute,
         )
 
-
         adj_k = torch.linalg.solve(
-            hparams.mom2_update_weight * cov + layer_ks @ layer_ks.T,
-            layer_ks
+            hparams.mom2_update_weight * cov + layer_ks @ layer_ks.T, layer_ks
         )
         resid = targets / (len(hparams.layers) - i)  # Distribute residual across layers
         upd_matrix = resid.T @ adj_k.T
@@ -145,6 +150,7 @@ def apply_memit_to_model(
             del x
         torch.cuda.empty_cache()
     return weights_copy
+
 
 def get_cov(
     model: AutoModelForCausalLM,

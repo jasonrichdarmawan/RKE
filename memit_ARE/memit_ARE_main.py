@@ -1,3 +1,4 @@
+import pprint
 import copy
 import torch
 import torch.nn as nn
@@ -12,35 +13,45 @@ import argparse
 
 import numpy as np
 import os
-from transformers.modeling_attn_mask_utils import AttentionMaskConverter,_prepare_4d_causal_attention_mask
+from transformers.modeling_attn_mask_utils import (
+    AttentionMaskConverter,
+    _prepare_4d_causal_attention_mask,
+)
 from .memit_ARE_hparams import MEMITAREHyperParams
+
+from torch import Tensor
+from jaxtyping import Float, jaxtyped
+from beartype import beartype as typechecker
+
 COV_CACHE = {}
+
+
 def compute_ks(
     model: AutoModelForCausalLM,
     tok: AutoTokenizer,
     batch_data: list,
     hparams: MEMITAREHyperParams,
     layer: int,
-    idxs_dict:dict,
-):
-    input_ids = tok(batch_data, padding=True,return_tensors="pt").to("cuda")
+    idxs_dict: dict[int, list[int]],
+) -> Float[Tensor, "num_targets h_dim"]:
+    input_ids = tok(batch_data, padding=True, return_tensors="pt").to("cuda")
     with torch.no_grad():
         with nethook.Trace(
             module=model,
             layer=hparams.layer_module_tmp.format(layer),
-            retain_input=True,
+            retain_input=False,
             retain_output=True,
             detach=True,
             clone=True,
-            ) as tr:
-                _ = model(**input_ids)
-                #layer_in_ks = tr.input #(bs:seq:h_dim)
-                zs_out = tr.output#(bs:seq:h_dim)
+        ) as tr:
+            _ = model(**input_ids)
+            # layer_in_ks = tr.input #(bs:seq:mlp_down_proj_in)
+            zs_out = tr.output  # (bs:seq:h_dim)
     zs_out = zs_out[0] if type(zs_out) is tuple else zs_out
-    zs_out_list = []
+    zs_out_list: list[Float[Tensor, "h_dim"]] = []
     for k, idxs in idxs_dict.items():
         for idx in idxs:
-            zs_out_list.append(zs_out[k,idx])
+            zs_out_list.append(zs_out[k, idx])
     zs_out = torch.stack(zs_out_list, dim=0)
     return zs_out
 
@@ -48,9 +59,9 @@ def compute_ks(
 def apply_memit_ARE_to_model(
     model: AutoModelForCausalLM,
     tok: AutoTokenizer,
-    hparams:MEMITAREHyperParams,
-    batch_data:list,
-    ):
+    hparams: MEMITAREHyperParams,
+    batch_data: list,
+):
 
     weights = {
         f"{hparams.rewrite_module_tmp.format(layer)}.weight": nethook.get_parameter(
@@ -61,31 +72,21 @@ def apply_memit_ARE_to_model(
     # Save old weights for future restoration
     weights_copy = {k: v.detach().clone() for k, v in weights.items()}
 
-
-
-
     z_layer = hparams.layers[-1]
-    all_zs_list = []
-    idxs_dict = {}
+    all_zs_list: list[Float[Tensor, "h_dim"]] = []
+    idxs_dict: dict[int, list[int]] = {}
     for k, data in enumerate(batch_data):
-        idxs_list, zs_list = compute_z(
-            model,
-            tok,
-            data,
-            z_layer,
-            hparams
-        )
+        idxs_list, zs_list = compute_z(model, tok, data, z_layer, hparams)
         # 将当前样本的 target_list 中的向量添加到 all_target_vectors 中
+        # Add the vector in the target_list of the current sample to all_target_vectors
+        # a target shape (h_dim,)
         all_zs_list.extend(zs_list)
         idxs_dict[k] = idxs_list
-    zs = torch.stack(all_zs_list, dim = 0)
-    batch_question_ans = [
-        i['question'] + i['answer'] for i in batch_data
-    ]
-    
+    zs = torch.stack(all_zs_list, dim=0)
+    batch_question_ans = [i["question"] + i["answer"] for i in batch_data]
     # Insert
     for i, layer in enumerate(hparams.layers):
-        #print(f"\n\nLAYER {layer}\n")
+        # print(f"\n\nLAYER {layer}\n")
         contexts_tok = tok(batch_question_ans, padding=True, return_tensors="pt").to(
             next(model.parameters()).device
         )
@@ -99,12 +100,11 @@ def apply_memit_ARE_to_model(
                 clone=True,
             ) as tr:
                 _ = model(**contexts_tok)
-                layer_in_ks = tr.input #(bs:seq:h_dim)
-                layer_out_ks = tr.output#(bs:seq:h_dim)
+                layer_in_ks = tr.input  # (bs:seq:mlp_down_proj_in)
+                layer_out_ks = tr.output  # (bs:seq:h_dim)
         layer_out_ks = layer_out_ks[0] if type(layer_out_ks) is tuple else layer_out_ks
-        
 
-        cur_zs = compute_ks(model, tok,batch_question_ans, hparams, z_layer, idxs_dict)
+        cur_zs = compute_ks(model, tok, batch_question_ans, hparams, z_layer, idxs_dict)
         targets = zs - cur_zs
         print("z error", torch.linalg.norm(targets, dim=1).mean())
         force_recompute = False
@@ -114,9 +114,11 @@ def apply_memit_ARE_to_model(
             tok,
             hparams.rewrite_module_tmp.format(layer),
             hparams.mom2_dataset,
-            hparams.mom2_n_samples
-            if not force_recompute
-            else hparams.mom2_n_samples // 10,
+            (
+                hparams.mom2_n_samples
+                if not force_recompute
+                else hparams.mom2_n_samples // 10
+            ),
             hparams.mom2_dtype,
             force_recompute=force_recompute,
         )
@@ -127,20 +129,24 @@ def apply_memit_ARE_to_model(
             unselected_idxs = list(all_idxs - set(idxs))
             for idx in idxs:
                 # 获取当前样本在指定索引下的layer_in_ks
+                # Get the layer_in_ks of the current sample at the specified index
                 ks_list.append(layer_in_ks[k, idx])
             for unselected_idx in unselected_idxs:
                 kp_list.append(layer_in_ks[k, unselected_idx])
 
         # 使用torch.stack将所有样本的layer_ks合并
-        layer_ks = torch.stack(ks_list, dim=1)
-        layer_kp = torch.stack(kp_list, dim=1)
+        # Use torch.stack to merge layer_ks of all samples
+        layer_ks = torch.stack(ks_list, dim=1).float()
+        layer_kp = torch.stack(kp_list, dim=1).float()
 
 
         adj_k = torch.linalg.solve(
-            hparams.mom2_update_weight * cov + layer_kp @ layer_kp.T +layer_ks @ layer_ks.T, #layer_kp @ layer_kp.T +
-            layer_ks
+            hparams.mom2_update_weight * cov
+            + layer_kp @ layer_kp.T
+            + layer_ks @ layer_ks.T,  # layer_kp @ layer_kp.T +
+            layer_ks,
         )
-        resid = targets / (len(hparams.layers) - i)  # Distribute residual across layers
+        resid = (targets / (len(hparams.layers) - i)).to(adj_k.device)  # Distribute residual across layers
         upd_matrix = resid.T @ adj_k.T
         # Adjust update matrix shape
         weight_name = f"{hparams.rewrite_module_tmp.format(layer)}.weight"
@@ -154,11 +160,12 @@ def apply_memit_ARE_to_model(
             weights[weight_name][...] = weights_copy[weight_name] + upd_matrix.float()
         # Clear GPU memory
         cov.cpu()
-        for x in [layer_ks,layer_kp, cur_zs, targets, layer_in_ks, layer_out_ks]:
+        for x in [layer_ks, layer_kp, cur_zs, targets, layer_in_ks, layer_out_ks]:
             x.cpu()
             del x
         torch.cuda.empty_cache()
     return weights_copy
+
 
 def get_cov(
     model: AutoModelForCausalLM,
@@ -189,12 +196,14 @@ def get_cov(
             to_collect=["mom2"],
             sample_size=mom2_n_samples,
             precision=mom2_dtype,
+            batch_tokens=2048,
             force_recompute=force_recompute,
         )
         COV_CACHE[key] = stat.mom2.moment().float().to("cpu")
 
+    device = next(nethook.get_module(model, layer_name).parameters()).device
     return (
-        torch.inverse(COV_CACHE[key].to("cuda")) if inv else COV_CACHE[key].to("cuda")
+        torch.inverse(COV_CACHE[key].to(device)) if inv else COV_CACHE[key].to(device)
     )
 
 
