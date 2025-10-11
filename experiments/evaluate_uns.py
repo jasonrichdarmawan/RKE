@@ -349,7 +349,6 @@ def main(
 
 
 def get_project(model, tok, layer, hparams):
-    print("world")
     force_recompute = False
     cov = get_cov(
         model,
