@@ -87,6 +87,7 @@ def main(
     num_edits: int = 1,
     use_cache: bool = False,
     sequential: bool = False,
+    pre_edited: bool = False,
 ):
     set_seed()
     # Set algorithm-specific variables
@@ -175,7 +176,16 @@ def main(
                 "AlphaEdit_ARE",
             ]
         ):
-            weights_copy = apply_algo(model, tok, hparams, batch, **ex_args, **nc_args)
+            if pre_edited:
+                weights = {
+                    f"{hparams.rewrite_module_tmp.format(layer)}.weight": nethook.get_parameter(
+                        model, f"{hparams.rewrite_module_tmp.format(layer)}.weight"
+                    )
+                    for layer in hparams.layers
+                }
+                weights_copy = {k: v.detach().clone() for k, v in weights.items()}
+            else:
+                weights_copy = apply_algo(model, tok, hparams, batch, **ex_args, **nc_args)
         exec_time = time() - start
         print(f"Execution took {exec_time:.1f}s")
 
@@ -208,12 +218,6 @@ def main(
                     )
                 ]
                 output = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
-                if batch_index < 10 // batch_size + 1:
-                    print(f"question:{data['question']}")
-                    print(output[0])
-                    if ds_name in ["unke", "cf"]:
-                        print(f"question:{data['para_question']}")
-                        print(output[1])
                 data["original_prediction"] = output[0]
                 if ds_name in ["unke", "cf"]:
                     data["para_prediction"] = output[1]
@@ -221,6 +225,13 @@ def main(
                     data["answer"] = data["answer"][: -len("<|eot_id|>")]
                 elif hparams.model_name == "Qwen2.5-7B-Instruct":
                     data["answer"] = data["answer"][: -len("<|im_end|>")]
+                if batch_index < 10 // batch_size + 1:
+                    print(f"question: {data['question']}")
+                    print(f"output[0]: {output[0]}")
+                    if ds_name in ["unke", "cf"]:
+                        print(f"para_question: {data['para_question']}")
+                        print(f"output[1]: {output[1]}")
+                    print(f"answer: {data['answer']}")
             if ds_name in ["unke", "cf", "mquake"]:
                 for data in batch:
                     question = tokenizer(
@@ -284,10 +295,11 @@ def main(
             output = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
             if batch_index < 10 // batch_size + 1:
                 print(f"question:{data['question']}")
-                print(output[0])
+                print(f"output[0]:{output[0]}")
                 if ds_name in ["unke", "cf"]:
-                    print(f"question:{data['para_question']}")
-                    print(output[1])
+                    print(f"para_question:{data['para_question']}")
+                    print(f"output[1]:{output[1]}")
+                print(f"answer:{data['answer']}")
             data["original_prediction"] = output[0]
             if ds_name in ["unke", "cf"]:
                 data["para_prediction"] = output[1]
@@ -330,7 +342,10 @@ def main(
             f"output/{alg_name}_{hparams.model_name}_sequential_{ds_name}_result.json"
         )
     else:
-        path = f"output/{alg_name}_{hparams.model_name}_{ds_name}_result.json"
+        if pre_edited:
+            path = f"output/pre_edited_{hparams.model_name}_{ds_name}_{dataset_size_limit}_result.json"
+        else:
+            path = f"output/{alg_name}_{hparams.model_name}_{ds_name}_{dataset_size_limit}_result.json"
     print(f"saving to {path}")
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as json_file:
@@ -469,6 +484,12 @@ if __name__ == "__main__":
         action="store_true",
         help="sequential editing",
     )
+    parser.add_argument(
+        "--pre_edited",
+        dest="pre_edited",
+        action="store_true",
+        help="Whether the model has been edited before evaluation",
+    )
 
     parser.set_defaults(skip_generation_tests=False, conserve_memory=False)
     args = parser.parse_args()
@@ -487,4 +508,5 @@ if __name__ == "__main__":
         num_edits=args.num_edits,
         use_cache=args.use_cache,
         sequential=args.sequential,
+        pre_edited=args.pre_edited,
     )

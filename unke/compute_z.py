@@ -88,6 +88,7 @@ def compute_z(
     opt = torch.optim.Adam([delta], lr=hparams.v_lr)
     nethook.set_requires_grad(False, model)
 
+    print(f"answer: {data['answer']}")
     # Execute optimization
     for it in range(hparams.v_num_grad_steps):
         opt.zero_grad()
@@ -136,8 +137,9 @@ def compute_z(
         loss = nll_loss + weight_decay.to(nll_loss.device)
         print(
             f"loss {np.round(loss.item(), 3)} = {np.round(nll_loss.item(), 3)}  + {np.round(weight_decay.item(), 3)} "
-            f"avg prob of [{data['answer']}] "
-            f"{torch.exp(-nll_loss_each).mean().item()}"
+            f"avg prob of "
+            # f"[{data['answer']}] "
+            f"{torch.exp(-nll_loss_each).mean().item() * 100}%"
         )
         # if loss < 5e-4:
         #    break

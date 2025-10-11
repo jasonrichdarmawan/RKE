@@ -72,14 +72,14 @@ def compute_z(
 
             if target_init is None:
 
-                target_init = cur_out[0, lookup_idxs[0]].detach().clone()
+                target_init = cur_out[0][0, lookup_idxs[0]].detach().clone()
 
             for i, idx in enumerate(lookup_idxs):
 
-                if len(lookup_idxs) != len(cur_out):
-                    cur_out[idx, i, :] += delta
+                if len(lookup_idxs) != len(cur_out[0]):
+                    cur_out[0][idx, i, :] += delta
                 else:
-                    cur_out[i, idx, :] += delta
+                    cur_out[0][i, idx, :] += delta
 
         return cur_out
 
@@ -87,6 +87,7 @@ def compute_z(
     opt = torch.optim.Adam([delta], lr=hparams.v_lr)
     nethook.set_requires_grad(False, model)
 
+    print(f"answer: {data['answer']}")
     # Execute optimization
     for it in range(hparams.v_num_grad_steps):
         opt.zero_grad()
@@ -106,7 +107,7 @@ def compute_z(
 
         # Compute loss on rewriting targets
 
-        output = tr[hparams.layer_module_tmp.format(loss_layer)].output
+        output = tr[hparams.layer_module_tmp.format(loss_layer)].output[0]
         if output.shape[1] != rewriting_targets.shape[1]:
             output = torch.transpose(output, 0, 1)
         full_repr = output
@@ -135,8 +136,9 @@ def compute_z(
         loss = nll_loss + weight_decay.to(nll_loss.device)
         print(
             f"loss {np.round(loss.item(), 3)} = {np.round(nll_loss.item(), 3)}  + {np.round(weight_decay.item(), 3)} "
-            f"avg prob of [{data['answer']}] "
-            f"{torch.exp(-nll_loss_each).mean().item()}"
+            f"avg prob of "
+            # f"[{data['answer']}] "
+            f"{torch.exp(-nll_loss_each).mean().item() * 100}%"
         )
         if loss < 1e-2:
             break
