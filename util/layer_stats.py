@@ -1,5 +1,6 @@
-import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "1,2"
+from dotenv import load_dotenv
+load_dotenv()
+
 from pathlib import Path
 import torch
 from datasets import load_dataset

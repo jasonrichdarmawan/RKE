@@ -12,14 +12,14 @@
 - einops==0.4.0
 - higher==0.2.1
 - hydra-core==1.2.0
-- transformers==4.23.1
+- transformers==4.40.1
 - datasets==3.6.0
 - matplotlib==3.6.1
 - spacy==3.4.1
 - scipy==1.9.2
 - scikit-learn==1.0.2
 - nltk==3.7
-- accelerate
+- accelerate==1.10.1
 
 ## Quick Start
 ### An example for editing Llama3-8B-Instruct on UnKEBench dataset using AnyEdit

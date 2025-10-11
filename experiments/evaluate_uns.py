@@ -1,6 +1,8 @@
+from dotenv import load_dotenv
+load_dotenv()
+
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "2,3,4"
 import json
 import shutil
 from pathlib import Path
@@ -101,7 +103,6 @@ def main(
             model_name,
             # device_map=device_map[model_name],
             device_map="auto",
-            dtype=torch.float32,
         )
         tok = AutoTokenizer.from_pretrained(model_name)
         tok.pad_token = tok.eos_token
