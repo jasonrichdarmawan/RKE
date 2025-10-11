@@ -1,4 +1,5 @@
 from dotenv import load_dotenv
+
 load_dotenv()
 
 import os
@@ -63,15 +64,6 @@ def set_seed(seed=2024):
     # Set a fixed value for the hash seed
     os.environ["PYTHONHASHSEED"] = str(seed)
 
-device_map = {
-    "meta-llama/Meta-Llama-3-8B-Instruct": {
-        "model.embed_tokens": 0,
-        "model.rotary_emb": 0,
-        **{f"model.layers.{i}": 0 if i < 16 else 1 for i in range(32)},
-        "model.norm": 1,
-        "lm_head": 1,
-    }
-}
 
 def main(
     alg_name: str,
@@ -185,7 +177,9 @@ def main(
                 }
                 weights_copy = {k: v.detach().clone() for k, v in weights.items()}
             else:
-                weights_copy = apply_algo(model, tok, hparams, batch, **ex_args, **nc_args)
+                weights_copy = apply_algo(
+                    model, tok, hparams, batch, **ex_args, **nc_args
+                )
         exec_time = time() - start
         print(f"Execution took {exec_time:.1f}s")
 
@@ -350,7 +344,6 @@ def main(
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as json_file:
         json.dump(edited_data, json_file, ensure_ascii=False, indent=4)
-
 
     print(f"Evaluation took {time() - start:.1f}s")
 
