@@ -127,7 +127,7 @@ def apply_AlphaEdit_to_model(
         upd_matrix = upd_matrix_match_shape(upd_matrix, weights[weight_name].shape)
         print("orig norm", torch.linalg.norm(weights[weight_name]))
         print("upd norm", torch.linalg.norm(upd_matrix))
-
+        breakpoint()
         # Update model weights and record desired changes in `delta` variable
         with torch.no_grad():
             weights[weight_name][...] = weights_copy[weight_name] + upd_matrix.float()

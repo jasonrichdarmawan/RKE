@@ -117,6 +117,8 @@ if __name__ == "__main__":
         rouge1s_para = []
         rouge2s_para = []
         rougels_para = []
+
+        bleu_scores_sub = []
         rougels_sub = []
         rouge1s_sub = []
         rouge2s_sub = []
@@ -128,10 +130,18 @@ if __name__ == "__main__":
             )
             bleu_scores.append(score)
             if ds_name in ["unke", "cf"]:
-                score = sentence_bleu(
+                score_para = sentence_bleu(
                     [data[index]["answer"]], data[index]["para_prediction"]
                 )
-                bleu_scores_para.append(score)
+                bleu_scores_para.append(score_para)
+
+                score_sub = [
+                    sentence_bleu(
+                        [data[index]["sub_answer"][idx]], [data[index]["sub_pred"][idx]]
+                    )
+                    for idx in range(len(data[index]["sub_pred"]))
+                ]
+                bleu_scores_sub.extend(score_sub)
             scores = rouge.get_scores(
                 data[index]["original_prediction"], data[index]["answer"]
             )
@@ -172,6 +182,7 @@ if __name__ == "__main__":
             temp_para["ROUGE-2"] = sum(rouge2s_para) / len(rouge2s_para)
             temp_para["ROUGE-L"] = sum(rougels_para) / len(rougels_para)
 
+        temp_sub["BLEU SCORE"] = sum(bleu_scores_sub) / len(bleu_scores_sub)
         temp_sub["ROUGE-1"] = sum(rouge1s_sub) / len(rouge1s_sub)
         temp_sub["ROUGE-2"] = sum(rouge2s_sub) / len(rouge2s_sub)
         temp_sub["ROUGE-L"] = sum(rougels_sub) / len(rougels_sub)
@@ -181,6 +192,12 @@ if __name__ == "__main__":
         sentences2 = [i["original_prediction"] for i in data]
         if ds_name in ["unke", "cf"]:
             sentences3 = [i["para_prediction"] for i in data]
+            sentece4 = [
+                i["sub_answer"][idx] for i in data for idx in range(len(i["sub_answer"]))
+            ]
+            sentence5 = [
+                i["sub_pred"][idx] for i in data for idx in range(len(i["sub_pred"]))
+            ]
         model = SentenceTransformer(args.model_path, device=f"cuda:{args.device}")
 
         embeddings1 = model.encode(
@@ -193,6 +210,12 @@ if __name__ == "__main__":
             embeddings3 = model.encode(
                 sentences3, convert_to_tensor=True, show_progress_bar=True
             )
+            embeddings4 = model.encode(
+                sentece4, convert_to_tensor=True, show_progress_bar=True
+            )
+            embeddings5 = model.encode(
+                sentence5, convert_to_tensor=True, show_progress_bar=True
+            )
         # Compute cosine-similarities
         cosine_scores = util.cos_sim(embeddings1, embeddings2)
         # print(cosine_scores.shape)
@@ -200,10 +223,14 @@ if __name__ == "__main__":
         temp_bert_score = cosine_scores.diagonal().cpu().numpy().tolist()
 
         if ds_name in ["unke", "cf"]:
-            cosine_scores = util.cos_sim(embeddings1, embeddings3)
+            cosine_scores_para = util.cos_sim(embeddings1, embeddings3)
             # print(cosine_scores.shape)
-            temp_para["Bert Score"] = cosine_scores.diagonal().mean().item()
-            temp_bert_score_para = cosine_scores.diagonal().cpu().numpy().tolist()
+            temp_para["Bert Score"] = cosine_scores_para.diagonal().mean().item()
+            temp_bert_score_para = cosine_scores_para.diagonal().cpu().numpy().tolist()
+
+            cosine_scores_sub = util.cos_sim(embeddings4, embeddings5)
+            temp_sub["Bert Score"] = cosine_scores_sub.diagonal().mean().item()
+
         matrics["Original"] = temp_original
         if ds_name in ["unke", "cf"]:
             matrics["Para"] = temp_para
