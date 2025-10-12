@@ -1,4 +1,7 @@
+# %%
+
 from dotenv import load_dotenv
+
 load_dotenv()
 
 from pathlib import Path
@@ -8,15 +11,26 @@ from tqdm.auto import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from util.globals import *
-from util.nethook import Trace, set_requires_grad
-from util.runningstats import CombinedStat, Mean, NormMean, SecondMoment, tally
+from util.nethook import TraceDict, set_requires_grad
+from util.runningstats import (
+    CombinedStat,
+    Mean,
+    NormMean,
+    SecondMoment,
+    tally,
+    load_cached_state,
+    make_loader,
+    save_cached_state,
+)
 
-from .tok_dataset import (
+from util.tok_dataset import (
     TokenizedDataset,
     dict_to_,
     flatten_masked_batch,
     length_collation,
 )
+
+# %%
 
 STAT_TYPES = {
     "mom2": SecondMoment,
@@ -43,6 +57,7 @@ def main():
     )
     aa("--dataset", default="wikipedia", choices=["wikitext", "wikipedia"])
     aa("--layers", default=[4, 5, 6, 7, 8], type=lambda x: list(map(int, x.split(","))))
+    aa("--layer_tmp", default=["model.layers.{}.mlp.down_proj"], nargs="+")
     aa("--to_collect", default=["mom2"], type=lambda x: x.split(","))
     aa("--sample_size", default=100000, type=lambda x: None if x == "all" else int(x))
     aa("--batch_tokens", default=None, type=lambda x: None if x == "any" else int(x))
@@ -69,19 +84,20 @@ def main():
         )
         # proj_layer_name = "c_proj" if "gpt2" in args.model_name else "fc_out"
         # layer_name = f"transformer.h.{layer_num}.mlp.{proj_layer_name}"
-        layer_name = f"model.layers.{layer_num}.mlp.down_proj"
-        layer_stats(
-            model,
-            tokenizer,
-            layer_name,
-            args.stats_dir,
-            args.dataset,
-            args.to_collect,
-            sample_size=args.sample_size,
-            precision=args.precision,
-            batch_tokens=args.batch_tokens,
-            download=args.download,
-        )
+        for layer_name in args.layer_tmp:
+            # layer_name = f"model.layers.{layer_num}.mlp.down_proj"
+            layer_stats(
+                model,
+                tokenizer,
+                layer_name.format(layer_num),
+                args.stats_dir,
+                args.dataset,
+                args.to_collect,
+                sample_size=args.sample_size,
+                precision=args.precision,
+                batch_tokens=args.batch_tokens,
+                download=args.download,
+            )
 
 
 def layer_stats(
@@ -103,6 +119,8 @@ def layer_stats(
     """
     Function to load or compute cached stats.
     """
+    if isinstance(layer_name, str):
+        layer_name = [layer_name]
 
     def get_ds():
         # Load_From_File
@@ -171,41 +189,84 @@ def layer_stats(
         model_name = model.config._name_or_path.rsplit("/")[-1]
 
     stats_dir = Path(stats_dir)
-    file_extension = f"{model_name}/{ds_name}_stats/{layer_name}_{precision}_{'-'.join(sorted(to_collect))}{size_suffix}.npz"
-    filename = stats_dir / file_extension
 
     print(f"Computing Cov locally....")
 
-    ds = get_ds() if not filename.exists() else None
-    if progress is None:
-        progress = lambda x: x
+    ds = get_ds()
 
-    stat = CombinedStat(**{k: STAT_TYPES[k]() for k in to_collect})
-    loader = tally(
-        stat,
-        ds,
-        cache=(filename if not force_recompute else None),
-        sample_size=sample_size,
-        batch_size=batch_size,
-        collate_fn=length_collation(batch_tokens),
-        pin_memory=True,
-        random_sample=1,
-        # num_workers=2,
+    args = {"sample_size": sample_size}
+
+    stats = {}
+    loaded_from_cache = {}
+    filenames = {}
+    for ln in layer_name:
+        file_extension = f"{model_name}/{ds_name}_stats/{ln}_{precision}_{'-'.join(sorted(to_collect))}{size_suffix}.npz"
+        filename = stats_dir / file_extension
+
+        if progress is None:
+            progress = lambda x: x
+
+        stat = CombinedStat(**{k: STAT_TYPES[k]() for k in to_collect})
+        cached_state = load_cached_state(filename, args)
+        if cached_state is not None:
+            stat.load_state_dict(cached_state)
+
+        stats[ln] = stat
+        loaded_from_cache[ln] = cached_state is not None
+        filenames[ln] = filename
+
+    # stat = CombinedStat(**{k: STAT_TYPES[k]() for k in to_collect})
+    # loader = tally(
+    #     stat,
+    #     ds,
+    #     cache=(filename if not force_recompute else None),
+    #     sample_size=sample_size,
+    #     batch_size=batch_size,
+    #     collate_fn=length_collation(batch_tokens),
+    #     pin_memory=True,
+    #     random_sample=1,
+    #     # num_workers=2,
+    # )
+
+    loader = (
+        make_loader(
+            ds,
+            sample_size=sample_size,
+            batch_size=batch_size,
+            collate_fn=length_collation(batch_tokens),
+            pin_memory=True,
+            random_sample=1,
+            # num_workers=2,
+        )
+        if any(not v for v in loaded_from_cache.values())
+        else []
     )
+
     batch_count = -(-(sample_size or len(ds)) // batch_size)
     with torch.no_grad():
         for batch_group in progress(loader, total=batch_count):
             for batch in batch_group:
                 batch = dict_to_(batch, "cuda")
-                with Trace(
+                with TraceDict(
                     model, layer_name, retain_input=True, retain_output=False, stop=True
                 ) as tr:
                     model(**batch)
-                feats = flatten_masked_batch(tr.input, batch["attention_mask"])
-                # feats = flatten_masked_batch(tr.output, batch["attention_mask"])
-                feats = feats.to(dtype=dtype)
-                stat.add(feats)
-    return stat
+
+                for ln, stat in stats.items():
+                    if loaded_from_cache[ln] and not force_recompute:
+                        continue
+
+                    feats = flatten_masked_batch(tr[ln].input, batch["attention_mask"])
+                    # feats = flatten_masked_batch(tr.output, batch["attention_mask"])
+                    feats = feats.to(dtype=dtype)
+                    stat.add(feats)
+
+    for ln, stat in stats.items():
+        stat.to_(device="cpu")
+        if not loaded_from_cache[ln]:
+            save_cached_state(filenames[ln], stat, args)
+
+    return stats if len(layer_name) > 1 else stats[layer_name[0]]
 
 
 if __name__ == "__main__":
