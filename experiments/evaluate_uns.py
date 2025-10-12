@@ -121,7 +121,11 @@ def main(
         tokenizer.pad_token_id = tok.eos_token_id
 
     if any(alg in alg_name for alg in ["AlphaEdit", "AlphaEdit_ARE"]):
-        if not os.path.exists(f"{hparams.model_name}_null_space_project.pt"):
+        name = model.config._name_or_path.rsplit("/")[-1]
+        stats_dir = Path(STATS_DIR)
+        file_extension = f"{name}/{hparams.mom2_dataset}_stats/null_space_project.pt"
+        filename = stats_dir / file_extension
+        if not os.path.exists(filename):
             W_out = nethook.get_parameter(
                 model, f"{hparams.rewrite_module_tmp.format(hparams.layers[-1])}.weight"
             )
@@ -131,9 +135,9 @@ def main(
             del W_out
             for i, layer in enumerate(hparams.layers):
                 P[i, :, :] = get_project(model, tok, layer, hparams)
-            torch.save(P, f"{hparams.model_name}_null_space_project.pt")
+            torch.save(P, filename)
         else:
-            P = torch.load(f"{hparams.model_name}_null_space_project.pt")
+            P = torch.load(filename)
     batch_size = num_edits
     num_batches = len(ds) // batch_size + (1 if len(ds) % batch_size else 0)
     edited_data = []
@@ -358,7 +362,7 @@ def get_project(model, tok, layer, hparams):
         hparams.mom2_n_samples if not force_recompute else hparams.mom2_n_samples // 10,
         hparams.mom2_dtype,
         force_recompute=force_recompute,
-    ).cpu()
+    ).to("cuda")
     U, S, _ = torch.linalg.svd(cov, full_matrices=False)
     threshold = hparams.nullspace_threshold
     small_singular_indices = (S < threshold).nonzero(as_tuple=True)[0]

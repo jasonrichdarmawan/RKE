@@ -146,6 +146,7 @@ def compute_z(
         opt = torch.optim.Adam([delta], lr=hparams.v_lr)
         nethook.set_requires_grad(False, model)
 
+        print(f"answer: {data['answer']}")
         # Execute optimization
         for it in range(hparams.v_num_grad_steps):
             opt.zero_grad()
