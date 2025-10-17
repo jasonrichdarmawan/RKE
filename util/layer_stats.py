@@ -1,9 +1,5 @@
 # %%
 
-from dotenv import load_dotenv
-
-load_dotenv()
-
 from pathlib import Path
 import torch
 from datasets import load_dataset
@@ -56,7 +52,7 @@ def main():
         # choices=["gpt2-xl", "EleutherAI/gpt-j-6B", "/data/jianghc/llama3-8b-instruct"],
     )
     aa("--dataset", default="wikipedia", choices=["wikitext", "wikipedia"])
-    aa("--layers", default=[4, 5, 6, 7, 8], type=lambda x: list(map(int, x.split(","))))
+    aa("--layers", default=[4, 5, 6, 7, 8], nargs="+", type=int)
     aa("--layer_tmp", default=["model.layers.{}.mlp.down_proj"], nargs="+")
     aa("--to_collect", default=["mom2"], type=lambda x: x.split(","))
     aa("--sample_size", default=100000, type=lambda x: None if x == "all" else int(x))
@@ -85,22 +81,22 @@ def main():
     # layer_name = f"transformer.h.{layer_num}.mlp.{proj_layer_name}"
 
     # layer_name = f"model.layers.{layer_num}.mlp.down_proj"
-    layer_stats(
-        model,
-        tokenizer,
-        [
-            layer_name.format(layer_num)
-            for layer_num in args.layers
-            for layer_name in args.layer_tmp
-        ],
-        args.stats_dir,
-        args.dataset,
-        args.to_collect,
-        sample_size=args.sample_size,
-        precision=args.precision,
-        batch_tokens=args.batch_tokens,
-        download=args.download,
-    )
+    for layer_num in args.layers:
+        layer_stats(
+            model,
+            tokenizer,
+            [
+                layer_name.format(layer_num)
+                for layer_name in args.layer_tmp
+            ],
+            args.stats_dir,
+            args.dataset,
+            args.to_collect,
+            sample_size=args.sample_size,
+            precision=args.precision,
+            batch_tokens=args.batch_tokens,
+            download=args.download,
+        )
 
 
 def layer_stats(
@@ -219,19 +215,6 @@ def layer_stats(
         loaded_from_cache[ln] = cached_state is not None
         filenames[ln] = filename
 
-    # stat = CombinedStat(**{k: STAT_TYPES[k]() for k in to_collect})
-    # loader = tally(
-    #     stat,
-    #     ds,
-    #     cache=(filename if not force_recompute else None),
-    #     sample_size=sample_size,
-    #     batch_size=batch_size,
-    #     collate_fn=length_collation(batch_tokens),
-    #     pin_memory=True,
-    #     random_sample=1,
-    #     # num_workers=2,
-    # )
-
     loader = (
         make_loader(
             ds,
@@ -252,14 +235,18 @@ def layer_stats(
             for batch in batch_group:
                 batch = dict_to_(batch, "cuda")
                 with TraceDict(
-                    model, layer_name, retain_input=True, retain_output=False, stop=True
+                    model,
+                    layer_name,
+                    retain_input=True,
+                    retain_output=False,
+                    clone=True,
+                    stop=True,
                 ) as tr:
                     model(**batch)
 
                 for ln, stat in stats.items():
                     if loaded_from_cache[ln] and not force_recompute:
                         continue
-
                     feats = flatten_masked_batch(tr[ln].input, batch["attention_mask"])
                     # feats = flatten_masked_batch(tr.output, batch["attention_mask"])
                     feats = feats.to(dtype=dtype)
