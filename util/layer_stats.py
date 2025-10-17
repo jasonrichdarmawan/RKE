@@ -6,6 +6,8 @@ from datasets import load_dataset
 from tqdm.auto import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from util import set_seed
+
 from util.globals import *
 from util.nethook import TraceDict, set_requires_grad
 from util.runningstats import (
@@ -40,6 +42,8 @@ def main():
     Command-line utility to precompute cached stats.
     """
     import argparse
+
+    set_seed()
 
     parser = argparse.ArgumentParser(description="ROME Statistics Collector")
 
@@ -81,22 +85,23 @@ def main():
     # layer_name = f"transformer.h.{layer_num}.mlp.{proj_layer_name}"
 
     # layer_name = f"model.layers.{layer_num}.mlp.down_proj"
-    for layer_num in args.layers:
-        layer_stats(
-            model,
-            tokenizer,
-            [
-                layer_name.format(layer_num)
-                for layer_name in args.layer_tmp
-            ],
-            args.stats_dir,
-            args.dataset,
-            args.to_collect,
-            sample_size=args.sample_size,
-            precision=args.precision,
-            batch_tokens=args.batch_tokens,
-            download=args.download,
-        )
+    # for layer_num in args.layers:
+    layer_stats(
+        model,
+        tokenizer,
+        [
+            layer_name.format(layer_num)
+            for layer_num in args.layers
+            for layer_name in args.layer_tmp
+        ],
+        args.stats_dir,
+        args.dataset,
+        args.to_collect,
+        sample_size=args.sample_size,
+        precision=args.precision,
+        batch_tokens=args.batch_tokens,
+        download=args.download,
+    )
 
 
 def layer_stats(

@@ -28,7 +28,7 @@ from unke import unkeHyperParams, apply_unke_to_model
 from unke_Alpha import unkeAlphaHyperParams, apply_unke_alpha_to_model
 from unke_Alpha_ARE import unkeAlphaAREHyperParams, apply_unke_Alpha_ARE_to_model
 from unke_ARE import unkeAREHyperParams, apply_unke_ARE_to_model
-from util import nethook
+from util import nethook, set_seed
 from util.hparams import HyperParams
 from util.globals import *
 
@@ -61,18 +61,6 @@ def get_llama_without_answer(que):
 
 def get_qwen_without_answer(que):
     return f"""<|im_start|>user\n{que}<|im_end|>\n<|im_start|>assistant\n"""
-
-
-def set_seed(seed=2024):
-    np.random.seed(seed)
-    random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    # When running on the CuDNN backend, two further options must be set
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-    # Set a fixed value for the hash seed
-    os.environ["PYTHONHASHSEED"] = str(seed)
 
 
 def main(
