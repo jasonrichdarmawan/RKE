@@ -75,29 +75,32 @@ def main():
     ).eval()
     set_requires_grad(False, model)
 
-    for layer_num in args.layers:
-        print(
-            f"Computing stats for layer {layer_num} of {args.model_name} "
-            f'over {args.sample_size or "all"} samples of {args.dataset}. '
-            "Note, the statistics are collected over the inputs to the second MLP layer, "
-            "or equivalently the outputs of the first MLP layer."
-        )
-        # proj_layer_name = "c_proj" if "gpt2" in args.model_name else "fc_out"
-        # layer_name = f"transformer.h.{layer_num}.mlp.{proj_layer_name}"
-        for layer_name in args.layer_tmp:
-            # layer_name = f"model.layers.{layer_num}.mlp.down_proj"
-            layer_stats(
-                model,
-                tokenizer,
-                layer_name.format(layer_num),
-                args.stats_dir,
-                args.dataset,
-                args.to_collect,
-                sample_size=args.sample_size,
-                precision=args.precision,
-                batch_tokens=args.batch_tokens,
-                download=args.download,
-            )
+    print(
+        f"Computing stats for layer {args.layers}, layer name {args.layer_tmp} of {args.model_name} "
+        f'over {args.sample_size or "all"} samples of {args.dataset}. '
+        "Note, the statistics are collected over the inputs to the second MLP layer, "
+        "or equivalently the outputs of the first MLP layer."
+    )
+    # proj_layer_name = "c_proj" if "gpt2" in args.model_name else "fc_out"
+    # layer_name = f"transformer.h.{layer_num}.mlp.{proj_layer_name}"
+
+    # layer_name = f"model.layers.{layer_num}.mlp.down_proj"
+    layer_stats(
+        model,
+        tokenizer,
+        [
+            layer_name.format(layer_num)
+            for layer_num in args.layers
+            for layer_name in args.layer_tmp
+        ],
+        args.stats_dir,
+        args.dataset,
+        args.to_collect,
+        sample_size=args.sample_size,
+        precision=args.precision,
+        batch_tokens=args.batch_tokens,
+        download=args.download,
+    )
 
 
 def layer_stats(
@@ -130,6 +133,7 @@ def layer_stats(
         raw_ds = load_dataset(
             ds_name,
             dict(wikitext="wikitext-103-raw-v1", wikipedia="20220301.en")[ds_name],
+            trust_remote_code=True,
         )
         if hasattr(model.config, "n_positions"):
             maxlen = model.config.n_positions

@@ -1,8 +1,7 @@
-from dotenv import load_dotenv
-
-load_dotenv()
-
 import os
+
+print(f"HF_HOME: {os.getenv('HF_HOME')=}")
+print(f"PYTHONPATH: {os.getenv('PYTHONPATH')=}")
 
 import json
 import shutil
@@ -15,20 +14,31 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from tqdm import tqdm
 import random
-from dsets import UnKEDataset, CounterFactDataset, MQUAKEDataset, EditeveryDataset
 
+from jaxtyping import Float
+from torch import Tensor
+
+from dsets import UnKEDataset, CounterFactDataset, MQUAKEDataset, EditeveryDataset
+from original import originalHyperParams
 from memit import MEMITHyperParams, apply_memit_to_model
 from memit_ARE import MEMITAREHyperParams, apply_memit_ARE_to_model
 from AlphaEdit import AlphaEditHyperParams, apply_AlphaEdit_to_model, get_cov
 from AlphaEdit_ARE import AlphaEditAREHyperParams, apply_AlphaEdit_ARE_to_model
 from unke import unkeHyperParams, apply_unke_to_model
+from unke_Alpha import unkeAlphaHyperParams, apply_unke_alpha_to_model
+from unke_Alpha_ARE import unkeAlphaAREHyperParams, apply_unke_Alpha_ARE_to_model
 from unke_ARE import unkeAREHyperParams, apply_unke_ARE_to_model
 from util import nethook
 from util.hparams import HyperParams
 from util.globals import *
 
+from tabulate import tabulate
+
 # from glue_eval.glue_eval import GLUEEval
 ALG_DICT: dict[str, tuple[type[HyperParams], Callable[..., dict[str, Any]]]] = {
+    "original": (originalHyperParams, None),
+    "unke_Alpha_ARE": (unkeAlphaAREHyperParams, apply_unke_Alpha_ARE_to_model),
+    "unke_Alpha": (unkeAlphaHyperParams, apply_unke_alpha_to_model),
     "unke_ARE": (unkeAREHyperParams, apply_unke_ARE_to_model),
     "unke": (unkeHyperParams, apply_unke_to_model),
     "AlphaEdit_ARE": (AlphaEditAREHyperParams, apply_AlphaEdit_ARE_to_model),
@@ -120,7 +130,7 @@ def main(
     if hparams.model_name == "Llama3-8B-Instruct":
         tokenizer.pad_token_id = tok.eos_token_id
 
-    if any(alg in alg_name for alg in ["AlphaEdit", "AlphaEdit_ARE"]):
+    if alg_name in ["AlphaEdit", "AlphaEdit_ARE"]:
         name = model.config._name_or_path.rsplit("/")[-1]
         stats_dir = Path(STATS_DIR)
         file_extension = f"{name}/{hparams.mom2_dataset}_stats/null_space_project.pt"
@@ -138,9 +148,63 @@ def main(
             torch.save(P, filename)
         else:
             P = torch.load(filename)
+
+    # for backward compatibility, we split the code here
+    if alg_name in ["unke_Alpha", "unke_Alpha_ARE"]:
+        name = model.config._name_or_path.rsplit("/")[-1]
+        stats_dir = Path(STATS_DIR)
+        file_extension = (
+            f"{name}/{hparams.mom2_dataset}_stats/null_space_project_unke_Alpha.pt"
+        )
+        filename = stats_dir / file_extension
+        if not os.path.exists(filename):
+            P = {}
+            for i, layer in enumerate(hparams.layers):
+                P.update(
+                    get_project(model=model, tok=tok, layer=layer, hparams=hparams)
+                )
+            torch.save(P, filename)
+        else:
+            P = torch.load(filename)
+
+    if alg_name in ["unke_Alpha", "unke_Alpha_ARE"]:
+        from peft import TaskType, get_peft_model
+        from peft.tuners.nullspacelora import NullSpaceLoraConfig
+
+        task_type = TaskType.CAUSAL_LM
+        target_modules = [
+            tmp.format(layer)
+            for layer in hparams.layers
+            for tmp in hparams.rewrite_module_tmp
+        ]
+        peft_config = NullSpaceLoraConfig(
+            task_type=task_type,
+            r=hparams.r,
+            target_modules=target_modules,
+            lora_alpha=hparams.lora_alpha,
+            lora_dropout=hparams.lora_dropout,
+        )
+        peft_model = get_peft_model(model=model, peft_config=peft_config)
+        peft_model.set_lora_P_map(lora_P_map=P, adapter_name="default")
+
     batch_size = num_edits
     num_batches = len(ds) // batch_size + (1 if len(ds) % batch_size else 0)
     edited_data = []
+
+    def print_output(data):
+        rows = []
+        rows.append(["question", data["question"]])
+        rows.append(["original_prediction", data["original_prediction"]])
+        if ds_name in ["unke", "cf"]:
+            rows.append(["para_question", data["para_question"]])
+            rows.append(["para_prediction", data["para_prediction"]])
+        rows.append(["answer", data["answer"]])
+        if ds_name in ["unke", "cf", "mquake"]:
+            for idx in range(len(data["sub_question"])):
+                rows.append([f"sub_question_{idx}", data["sub_question"][idx]])
+                rows.append([f"sub_pred_{idx}", data["sub_pred"][idx]])
+                rows.append([f"sub_answer_{idx}", data["sub_answer"][idx]])
+        print(tabulate(rows))
 
     for batch_index in tqdm(range(num_batches)):
         start_index = batch_index * batch_size
@@ -161,29 +225,21 @@ def main(
         )
 
         start = time()
-        if any(
-            alg in alg_name
-            for alg in [
-                "unke",
-                "unke_ARE",
-                "MEMIT",
-                "MEMIT_ARE",
-                "AlphaEdit",
-                "AlphaEdit_ARE",
-            ]
-        ):
-            if pre_edited:
-                weights = {
-                    f"{hparams.rewrite_module_tmp.format(layer)}.weight": nethook.get_parameter(
-                        model, f"{hparams.rewrite_module_tmp.format(layer)}.weight"
-                    )
-                    for layer in hparams.layers
-                }
-                weights_copy = {k: v.detach().clone() for k, v in weights.items()}
-            else:
-                weights_copy = apply_algo(
-                    model, tok, hparams, batch, **ex_args, **nc_args
-                )
+        if alg_name in [
+            "unke",
+            "unke_ARE",
+            "MEMIT",
+            "MEMIT_ARE",
+            "AlphaEdit",
+            "AlphaEdit_ARE",
+        ]:
+            weights_copy = apply_algo(model, tok, hparams, batch, **ex_args, **nc_args)
+        elif alg_name in ["unke_Alpha", "unke_Alpha_ARE"]:
+            peft_model.train()
+            weights_copy = apply_algo(
+                peft_model, tok, hparams, batch, **ex_args, **nc_args
+            )
+            peft_model.eval()
         exec_time = time() - start
         print(f"Execution took {exec_time:.1f}s")
 
@@ -223,15 +279,8 @@ def main(
                     data["answer"] = data["answer"][: -len("<|eot_id|>")]
                 elif hparams.model_name == "Qwen2.5-7B-Instruct":
                     data["answer"] = data["answer"][: -len("<|im_end|>")]
-                if batch_index < 10 // batch_size + 1:
-                    print(f"question: {data['question']}")
-                    print(f"output[0]: {output[0]}")
-                    if ds_name in ["unke", "cf"]:
-                        print(f"para_question: {data['para_question']}")
-                        print(f"output[1]: {output[1]}")
-                    print(f"answer: {data['answer']}")
-            if ds_name in ["unke", "cf", "mquake"]:
-                for data in batch:
+
+                if ds_name in ["unke", "cf", "mquake"]:
                     question = tokenizer(
                         data["sub_question"], return_tensors="pt", padding=True
                     )
@@ -261,10 +310,14 @@ def main(
 
                     data["sub_pred"] = output
 
+                if batch_index < 10 // batch_size + 1:
+                    print_output(data=data)
+
             edited_data.extend(batch)
-            with torch.no_grad():
-                for k, v in weights_copy.items():
-                    nethook.get_parameter(model, k)[...] = v.to("cuda")
+            if alg_name != "original":
+                with torch.no_grad():
+                    for k, v in weights_copy.items():
+                        nethook.get_parameter(model, k)[...] = v.to("cuda")
     if sequential:
         for data in ds:
             if ds_name in ["unke", "cf"]:
@@ -291,13 +344,6 @@ def main(
                 for input_ids, output_ids in zip(question["input_ids"], generated_ids)
             ]
             output = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
-            if batch_index < 10 // batch_size + 1:
-                print(f"question:{data['question']}")
-                print(f"output[0]:{output[0]}")
-                if ds_name in ["unke", "cf"]:
-                    print(f"para_question:{data['para_question']}")
-                    print(f"output[1]:{output[1]}")
-                print(f"answer:{data['answer']}")
             data["original_prediction"] = output[0]
             if ds_name in ["unke", "cf"]:
                 data["para_prediction"] = output[1]
@@ -305,8 +351,8 @@ def main(
                 data["answer"] = data["answer"][: -len("<|eot_id|>")]
             elif hparams.model_name == "Qwen2.5-7B-Instruct":
                 data["answer"] = data["answer"][: -len("<|im_end|>")]
-        if ds_name in ["unke", "cf", "mquake"]:
-            for data in ds:
+
+            if ds_name in ["unke", "cf", "mquake"]:
                 question = tokenizer(
                     data["sub_question"], return_tensors="pt", padding=True
                 )
@@ -334,14 +380,15 @@ def main(
 
                 data["sub_pred"] = output
 
+            if batch_index < 10 // batch_size + 1:
+                print_output(data=data)
+
         edited_data.extend(ds)
     if sequential:
-        path = (
-            f"output/{alg_name}_{hparams.model_name}_sequential_{ds_name}_result.json"
-        )
+        path = f"output/{alg_name}_{hparams.model_name}_sequential_{ds_name}_{dataset_size_limit}_result.json"
     else:
-        if pre_edited:
-            path = f"output/pre_edited_{hparams.model_name}_{ds_name}_{dataset_size_limit}_result.json"
+        if alg_name == "original":
+            path = f"output/original_{hparams.model_name}_{ds_name}_{dataset_size_limit}_result.json"
         else:
             path = f"output/{alg_name}_{hparams.model_name}_{ds_name}_{dataset_size_limit}_result.json"
     print(f"saving to {path}")
@@ -352,22 +399,47 @@ def main(
     print(f"Evaluation took {time() - start:.1f}s")
 
 
-def get_project(model, tok, layer, hparams):
+def get_project(model, tok, layer, hparams) -> Union[
+    dict[str, Float[Tensor, "in_features in_features"]],
+    Float[Tensor, "in_features in_features"],
+]:
+    """
+    Backward compatibility:
+    memit, memit_ARE, AlphaEdit, AlphaEdit_ARE return a single projection matrix
+    unke_Alpha, unke_Alpha_ARE return a dictionary of projection matrices for each module template
+    """
     force_recompute = False
-    cov = get_cov(
-        model,
-        tok,
-        hparams.rewrite_module_tmp.format(layer),
-        hparams.mom2_dataset,
-        hparams.mom2_n_samples if not force_recompute else hparams.mom2_n_samples // 10,
-        hparams.mom2_dtype,
-        force_recompute=force_recompute,
-    ).to("cuda")
-    U, S, _ = torch.linalg.svd(cov, full_matrices=False)
-    threshold = hparams.nullspace_threshold
-    small_singular_indices = (S < threshold).nonzero(as_tuple=True)[0]
-    print(len(small_singular_indices))
-    return U[:, small_singular_indices] @ U[:, small_singular_indices].T
+
+    layer_names = hparams.rewrite_module_tmp
+    if isinstance(layer_names, str):
+        layer_names = [layer_names]
+
+    projections = {}
+    for layer_name in layer_names:
+        ln = layer_name.format(layer)
+        cov = get_cov(
+            model=model,
+            tok=tok,
+            layer_name=ln,
+            mom2_dataset=hparams.mom2_dataset,
+            mom2_n_samples=(
+                hparams.mom2_n_samples
+                if not force_recompute
+                else hparams.mom2_n_samples // 10
+            ),
+            mom2_dtype=hparams.mom2_dtype,
+            force_recompute=force_recompute,
+        ).to("cuda")
+        U, S, _ = torch.linalg.svd(cov, full_matrices=False)
+        threshold = hparams.nullspace_threshold
+        small_singular_indices = (S < threshold).nonzero(as_tuple=True)[0]
+        print(
+            f"Layer name: {ln}, singular values less than the threshold size: {len(small_singular_indices)}"
+        )
+        projection = U[:, small_singular_indices] @ U[:, small_singular_indices].T
+        projections[ln] = projection
+
+    return projections if len(projections) > 1 else projections[layer_name[0]]
 
 
 def window(seq, n=2):
@@ -395,6 +467,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--alg_name",
         choices=[
+            "original",
             "AlphaEdit",
             "AlphaEdit_ARE",
             "MEMIT",
@@ -404,12 +477,12 @@ if __name__ == "__main__":
             "MEND",
             "unke",
             "unke_ARE",
+            "unke_Alpha",
+            "unke_Alpha_ARE",
         ],
-        default="ROME",
         help="Editing algorithm to use. Results are saved in results/<alg_name>/<run_id>, "
         "where a new run_id is generated on each run. "
         "If continuing from previous run, specify the run_id in --continue_from_run.",
-        required=True,
     )
     parser.add_argument(
         "--model_name",
@@ -480,12 +553,6 @@ if __name__ == "__main__":
         action="store_true",
         help="sequential editing",
     )
-    parser.add_argument(
-        "--pre_edited",
-        dest="pre_edited",
-        action="store_true",
-        help="Whether the model has been edited before evaluation",
-    )
 
     parser.set_defaults(skip_generation_tests=False, conserve_memory=False)
     args = parser.parse_args()
@@ -504,5 +571,4 @@ if __name__ == "__main__":
         num_edits=args.num_edits,
         use_cache=args.use_cache,
         sequential=args.sequential,
-        pre_edited=args.pre_edited,
     )

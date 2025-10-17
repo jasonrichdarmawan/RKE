@@ -192,12 +192,12 @@ if __name__ == "__main__":
         sentences2 = [i["original_prediction"] for i in data]
         if ds_name in ["unke", "cf"]:
             sentences3 = [i["para_prediction"] for i in data]
-            sentece4 = [
-                i["sub_answer"][idx] for i in data for idx in range(len(i["sub_answer"]))
-            ]
-            sentence5 = [
-                i["sub_pred"][idx] for i in data for idx in range(len(i["sub_pred"]))
-            ]
+        sentece4 = [
+            i["sub_answer"][idx] for i in data for idx in range(len(i["sub_answer"]))
+        ]
+        sentence5 = [
+            i["sub_pred"][idx] for i in data for idx in range(len(i["sub_pred"]))
+        ]
         model = SentenceTransformer(args.model_path, device=f"cuda:{args.device}")
 
         embeddings1 = model.encode(
@@ -210,12 +210,12 @@ if __name__ == "__main__":
             embeddings3 = model.encode(
                 sentences3, convert_to_tensor=True, show_progress_bar=True
             )
-            embeddings4 = model.encode(
-                sentece4, convert_to_tensor=True, show_progress_bar=True
-            )
-            embeddings5 = model.encode(
-                sentence5, convert_to_tensor=True, show_progress_bar=True
-            )
+        embeddings4 = model.encode(
+            sentece4, convert_to_tensor=True, show_progress_bar=True
+        )
+        embeddings5 = model.encode(
+            sentence5, convert_to_tensor=True, show_progress_bar=True
+        )
         # Compute cosine-similarities
         cosine_scores = util.cos_sim(embeddings1, embeddings2)
         # print(cosine_scores.shape)
