@@ -5,9 +5,11 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from .unke_alpha_hparams import unkeAlphaHyperParams
 from util import nethook
 
+from peft import PeftModel
+
 
 def compute_z(
-    model: AutoModelForCausalLM,
+    peft_model: PeftModel,
     tok: AutoTokenizer,
     data: Dict,
     layer: int,
@@ -20,13 +22,13 @@ def compute_z(
 
     # Get model parameters (bs:seq:h_dim) -> (bs:seq:vocab_size)
     lm_w, ln_f = (
-        nethook.get_parameter(model, f"{hparams.lm_head_module}.weight").T,
-        nethook.get_module(model, hparams.ln_f_module),
+        nethook.get_parameter(peft_model.model, f"{hparams.lm_head_module}.weight").T,
+        nethook.get_module(peft_model.model, hparams.ln_f_module),
     )
     try:
-        lm_b = nethook.get_parameter(model, f"{hparams.lm_head_module}.bias")
+        lm_b = nethook.get_parameter(peft_model.model, f"{hparams.lm_head_module}.bias")
     except LookupError as _:
-        lm_b = next(model.parameters()).new_zeros(model.config.vocab_size)
+        lm_b = next(peft_model.model.parameters()).new_zeros(peft_model.model.config.vocab_size)
 
     # print("Computing right vector (v)")
 
@@ -55,12 +57,12 @@ def compute_z(
 
     loss_layer = max(hparams.v_loss_layer, layer)
 
-    if hasattr(model.config, "n_embd"):
-        delta = torch.zeros((model.config.n_embd,), requires_grad=True, device="cuda")
-    elif hasattr(model.config, "hidden_size"):
-        device = next(nethook.get_module(model, hparams.layer_module_tmp.format(layer)).parameters()).device
+    if hasattr(peft_model.model.config, "n_embd"):
+        delta = torch.zeros((peft_model.model.config.n_embd,), requires_grad=True, device="cuda")
+    elif hasattr(peft_model.model.config, "hidden_size"):
+        device = next(nethook.get_module(peft_model.model, hparams.layer_module_tmp.format(layer)).parameters()).device
         delta = torch.zeros(
-            (model.config.hidden_size,), requires_grad=True, device=device
+            (peft_model.model.config.hidden_size,), requires_grad=True, device=device
         )
     else:
         raise NotImplementedError
@@ -86,7 +88,7 @@ def compute_z(
 
     # Optimizer
     opt = torch.optim.Adam([delta], lr=hparams.v_lr)
-    nethook.set_requires_grad(False, model)
+    nethook.set_requires_grad(False, peft_model.model)
 
     print(f"answer: {data['answer']}")
     # Execute optimization
@@ -95,7 +97,7 @@ def compute_z(
 
         # Forward propagation
         with nethook.TraceDict(
-            module=model,
+            module=peft_model.model,
             layers=[
                 hparams.layer_module_tmp.format(loss_layer),
                 hparams.layer_module_tmp.format(layer),
@@ -104,7 +106,7 @@ def compute_z(
             retain_output=True,
             edit_output=edit_output_fn,
         ) as tr:
-            logits = model(input_ids).logits
+            logits = peft_model(input_ids).logits
 
         # Compute loss on rewriting targets
 
