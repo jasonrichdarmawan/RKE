@@ -1,8 +1,9 @@
 __pycache__
 .ipynb_checkpoints
 data/stats
-data/stats_A100_SXM
+data/stats_*
 .env
 output
 *.pt
 *.log
+results

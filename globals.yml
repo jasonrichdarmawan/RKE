@@ -4,7 +4,8 @@
 
   # Data files
   DATA_DIR: "data"
-  STATS_DIR: "data/stats"
+  STATS_DIR: "data/stats_RTX_6000_Ada_Generation_output"
+  # STATS_DIR: "data/stats_A100_SXM_output"
   KV_DIR: "share/projects/rewriting-knowledge/kvs"
 
   # Hyperparameters

@@ -148,6 +148,7 @@ def get_cov(
     mom2_dtype: str,
     inv: bool = False,
     force_recompute: bool = False,
+    return_count: bool = False,
 ) -> torch.Tensor:
     """
     Retrieves covariance statistics, then computes the algebraic inverse.
@@ -170,11 +171,22 @@ def get_cov(
             precision=mom2_dtype,
             force_recompute=force_recompute,
         )
-        COV_CACHE[key] = stat.mom2.moment().float().to("cpu")
+        if return_count:
+            COV_CACHE[key] = {
+                "mom2": stat.mom2.mom2,
+                "count": stat.mom2.count,
+            }
+        else:
+            COV_CACHE[key] = stat.mom2.moment().float()
 
-    return (
-        torch.inverse(COV_CACHE[key].to("cuda")) if inv else COV_CACHE[key].to("cuda")
-    )
+    if return_count:
+        return COV_CACHE[key]
+    else:
+        return (
+            torch.inverse(COV_CACHE[key]["mom2"].to("cuda"))
+            if inv
+            else COV_CACHE[key]["mom2"].to("cuda")
+        )
 
 
 def upd_matrix_match_shape(matrix: torch.Tensor, shape: torch.Size) -> torch.Tensor:

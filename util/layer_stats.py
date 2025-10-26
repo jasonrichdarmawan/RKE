@@ -242,8 +242,8 @@ def layer_stats(
                 with TraceDict(
                     model,
                     layer_name,
-                    retain_input=True,
-                    retain_output=False,
+                    retain_input=False,
+                    retain_output=True,
                     clone=True,
                     stop=True,
                 ) as tr:
@@ -252,8 +252,8 @@ def layer_stats(
                 for ln, stat in stats.items():
                     if loaded_from_cache[ln] and not force_recompute:
                         continue
-                    feats = flatten_masked_batch(tr[ln].input, batch["attention_mask"])
-                    # feats = flatten_masked_batch(tr.output, batch["attention_mask"])
+                    # feats = flatten_masked_batch(tr[ln].input, batch["attention_mask"])
+                    feats = flatten_masked_batch(tr[ln].output, batch["attention_mask"])
                     feats = feats.to(dtype=dtype)
                     stat.add(feats)
 

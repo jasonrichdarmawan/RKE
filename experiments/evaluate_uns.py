@@ -77,47 +77,68 @@ def main(
     num_edits: int = 1,
     use_cache: bool = False,
     sequential: bool = False,
-    pre_edited: bool = False,
+    downstream_eval_steps: int = 0,
 ):
     set_seed()
     # Set algorithm-specific variables
     params_class, apply_algo = ALG_DICT[alg_name]
 
+    # Determine run directory
+    alg_dir = RESULTS_DIR / dir_name
+    if alg_dir.exists():
+        id_list = [
+            int(str(x).split("_")[-1])
+            for x in alg_dir.iterdir()
+            if str(x).split("_")[-1].isnumeric()
+        ]
+        run_id = 0 if not id_list else max(id_list) + 1
+    else:
+        run_id = 0
+    run_dir = RESULTS_DIR / dir_name / f"run_{str(run_id).zfill(3)}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Results will be stored at {run_dir}")
+
     params_path = HPARAMS_DIR / alg_name / hparams_fname
     hparams = params_class.from_json(params_path)
+    if not (run_dir / "params.json").exists():
+        shutil.copyfile(params_path, run_dir / "params.json")
+    print(f"Executing {alg_name} with parameters {hparams}")
 
-    # Instantiate vanilla model
-    if type(model_name) is str:
-        print("Instantiating model")
-        # float16 has precision issues
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            # device_map=device_map[model_name],
-            device_map="auto",
-        )
-        tok = AutoTokenizer.from_pretrained(model_name)
-        tok.pad_token = tok.eos_token
-    else:
-        model, tok = model_name
-        model_name = model.config._name_or_path
-    ds_class = DS_DICT[ds_name]
-    ds = ds_class(DATA_DIR, model_name=hparams.model_name, size=dataset_size_limit)
-    with open(Path(DATA_DIR) / "alpaca_data.json", "r", encoding="utf-8") as json_file:
-        ex_datas = json.load(json_file)
-    if hparams.model_name == "Llama3-8B-Instruct":
-        ex_datas = [
-            get_llama_without_answer(i["instruction"] + i["input"]) + i["output"]
-            for i in ex_datas
-        ]
-    elif hparams.model_name == "Qwen2.5-7B-Instruct":
-        ex_datas = [
-            get_qwen_without_answer(i["instruction"] + i["input"]) + i["output"]
-            for i in ex_datas
-        ]
+    # Load model
+    """
+    float16 has precision issues
+    """
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        device_map="auto",
+    )
+    tok = AutoTokenizer.from_pretrained(model_name)
+    tok.pad_token = tok.eos_token
     tokenizer = AutoTokenizer.from_pretrained(model_name, padding_side="left")
     if hparams.model_name == "Llama3-8B-Instruct":
         tokenizer.pad_token_id = tok.eos_token_id
 
+    # Load data
+    ds_class = DS_DICT[ds_name]
+    ds = ds_class(DATA_DIR, model_name=hparams.model_name, size=dataset_size_limit)
+
+    if alg_name in ["unke", "unke_ARE", "unke_Alpha", "unke_Alpha_ARE"]:
+        with open(
+            Path(DATA_DIR) / "alpaca_data.json", "r", encoding="utf-8"
+        ) as json_file:
+            ex_datas = json.load(json_file)
+        if hparams.model_name == "Llama3-8B-Instruct":
+            ex_datas = [
+                get_llama_without_answer(i["instruction"] + i["input"]) + i["output"]
+                for i in ex_datas
+            ]
+        elif hparams.model_name == "Qwen2.5-7B-Instruct":
+            ex_datas = [
+                get_qwen_without_answer(i["instruction"] + i["input"]) + i["output"]
+                for i in ex_datas
+            ]
+
+    # Load null space projection matrices
     if alg_name in ["AlphaEdit", "AlphaEdit_ARE"]:
         name = model.config._name_or_path.rsplit("/")[-1]
         stats_dir = Path(STATS_DIR)
@@ -136,44 +157,55 @@ def main(
             torch.save(P, filename)
         else:
             P = torch.load(filename)
-
-    # for backward compatibility, we split the code here
-    if alg_name in ["unke_Alpha", "unke_Alpha_ARE"]:
+    elif alg_name in ["unke_Alpha", "unke_Alpha_ARE"]:
         name = model.config._name_or_path.rsplit("/")[-1]
         stats_dir = Path(STATS_DIR)
-        file_extension = (
-            f"{name}/{hparams.mom2_dataset}_stats/null_space_project_unke_Alpha.pt"
-        )
+        file_extension = f"{name}/{hparams.mom2_dataset}_stats/null_space_project_unke_Alpha_eigendecomposition.pt"
         filename = stats_dir / file_extension
-        if not os.path.exists(filename):
-            P = {}
-            for i, layer in enumerate(hparams.layers):
-                P.update(
-                    get_project(model=model, tok=tok, layer=layer, hparams=hparams)
+        second_moment_map = {}
+        S_KpKp_map = {}
+        S_KpVp_map = {}
+        S_VpVp_map = {}
+        S_count_map = {}
+        for i, layer in enumerate(hparams.layers):
+            force_recompute = False
+            for layer_name_template in hparams.rewrite_module_tmp:
+                layer_name = layer_name_template.format(layer)
+                second_moment = get_cov(
+                    model=model,
+                    tok=tok,
+                    layer_name=layer_name,
+                    mom2_dataset=hparams.mom2_dataset,
+                    mom2_n_samples=(
+                        hparams.mom2_n_samples
+                        if not force_recompute
+                        else hparams.mom2_n_samples // 10
+                    ),
+                    mom2_dtype=hparams.mom2_dtype,
+                    force_recompute=force_recompute,
+                    return_count=True,
                 )
-            torch.save(P, filename)
-        else:
-            P = torch.load(filename)
+                second_moment_map[layer_name] = second_moment
+                S_KpKp_map[layer_name] = None
+                S_KpVp_map[layer_name] = None
+                S_VpVp_map[layer_name] = None
+                S_count_map[layer_name] = None
 
-    if alg_name in ["unke_Alpha", "unke_Alpha_ARE"]:
-        from peft import TaskType, get_peft_model
-        from peft.tuners.nullspacelora import NullSpaceLoraConfig
-
-        task_type = TaskType.CAUSAL_LM
-        target_modules = [
-            tmp.format(layer)
-            for layer in hparams.layers
-            for tmp in hparams.rewrite_module_tmp
-        ]
-        peft_config = NullSpaceLoraConfig(
-            task_type=task_type,
-            r=hparams.r,
-            target_modules=target_modules,
-            lora_alpha=hparams.lora_alpha,
-            lora_dropout=hparams.lora_dropout,
-        )
-        peft_model = get_peft_model(model=model, peft_config=peft_config)
-        peft_model.set_lora_P_map(lora_P_map=P, adapter_name="default")
+        # task_type = TaskType.CAUSAL_LM
+        # target_modules = [
+        #     tmp.format(layer)
+        #     for layer in hparams.layers
+        #     for tmp in hparams.rewrite_module_tmp
+        # ]
+        # peft_config = NullSpaceLoraConfig(
+        #     task_type=task_type,
+        #     r=hparams.r,
+        #     target_modules=target_modules,
+        #     lora_alpha=hparams.lora_alpha,
+        #     lora_dropout=hparams.lora_dropout,
+        # )
+        # peft_model = get_peft_model(model=model, peft_config=peft_config)
+        # peft_model.set_lora_P_map(lora_P_map=P_map, adapter_name="default")
 
     batch_size = num_edits
     num_batches = len(ds) // batch_size + (1 if len(ds) % batch_size else 0)
@@ -187,30 +219,33 @@ def main(
             rows.append(["para_question", data["para_question"]])
             rows.append(["para_prediction", data["para_prediction"]])
         rows.append(["answer", data["answer"]])
-        if ds_name in ["unke", "cf", "mquake"]:
-            for idx in range(len(data["sub_question"])):
-                rows.append([f"sub_question_{idx}", data["sub_question"][idx]])
-                rows.append([f"sub_pred_{idx}", data["sub_pred"][idx]])
-                rows.append([f"sub_answer_{idx}", data["sub_answer"][idx]])
-        print(tabulate(rows))
+        # if ds_name in ["unke", "cf", "mquake"]:
+        #     for idx in range(len(data["sub_question"])):
+        #         rows.append([f"sub_question_{idx}", data["sub_question"][idx]])
+        #         rows.append([f"sub_pred_{idx}", data["sub_pred"][idx]])
+        #         rows.append([f"sub_answer_{idx}", data["sub_answer"][idx]])
+        print(tabulate(tabular_data=rows, tablefmt="plain"))
 
+    glue_save_location = str(run_dir) + "/glue_eval/"
+    os.makedirs(glue_save_location, exist_ok=True)
+    cnt = 0
     for batch_index in tqdm(range(num_batches)):
         start_index = batch_index * batch_size
         end_index = start_index + batch_size
         batch = ds[start_index:end_index]
-        random_elements = random.sample(ex_datas, 20)
         # case_result_template = str(run_dir / "{}_edits-case_{}.json")
 
-        ex_args = (
-            dict(ex_data=random_elements)
-            if any(alg in alg_name for alg in ["unke", "unke_ARE"])
-            else dict()
-        )
-        nc_args = (
-            dict(P=P)
-            if any(alg in alg_name for alg in ["AlphaEdit", "AlphaEdit_ARE"])
-            else dict()
-        )
+        kwargs = {}
+        if alg_name in ["unke", "unke_ARE"]:
+            kwargs["ex_data"] = random.sample(ex_datas, 20)
+        if alg_name in ["AlphaEdit", "AlphaEdit_ARE"]:
+            kwargs["P"] = P
+        if alg_name in ["unke_Alpha", "unke_Alpha_ARE"]:
+            kwargs["second_moment_map"] = second_moment_map
+            kwargs["S_KpKp_map"] = S_KpKp_map
+            kwargs["S_KpVp_map"] = S_KpVp_map
+            kwargs["S_VpVp_map"] = S_VpVp_map
+            kwargs["S_count_map"] = S_count_map
 
         start = time()
         if alg_name in [
@@ -220,14 +255,10 @@ def main(
             "MEMIT_ARE",
             "AlphaEdit",
             "AlphaEdit_ARE",
+            "unke_Alpha",
+            "unke_Alpha_ARE",
         ]:
-            weights_copy = apply_algo(model, tok, hparams, batch, **ex_args, **nc_args)
-        elif alg_name in ["unke_Alpha", "unke_Alpha_ARE"]:
-            peft_model.train()
-            weights_copy = apply_algo(
-                peft_model, tok, hparams, batch, **ex_args, **nc_args
-            )
-            peft_model.eval()
+            weights_copy = apply_algo(model, tok, hparams, batch, **kwargs)
         exec_time = time() - start
         print(f"Execution took {exec_time:.1f}s")
 
@@ -373,7 +404,8 @@ def main(
 
         edited_data.extend(ds)
     if sequential:
-        path = f"output/{alg_name}_{hparams.model_name}_sequential_{ds_name}_{dataset_size_limit}_result.json"
+        # path = f"output/{alg_name}_{hparams.model_name}_sequential_{ds_name}_{dataset_size_limit}_result.json"
+        path = f"output/previous_term_KpKp_no_divide_scale=5e-6_{alg_name}_{hparams.model_name}_sequential_{ds_name}_{dataset_size_limit}_result.json"
     else:
         if alg_name == "original":
             path = f"output/original_{hparams.model_name}_{ds_name}_{dataset_size_limit}_result.json"
@@ -387,7 +419,7 @@ def main(
     print(f"Evaluation took {time() - start:.1f}s")
 
 
-def get_project(model, tok, layer, hparams) -> Union[
+def get_project(model, tok, layer, hparams, use_svd=True) -> Union[
     dict[str, Float[Tensor, "in_features in_features"]],
     Float[Tensor, "in_features in_features"],
 ]:
@@ -418,13 +450,29 @@ def get_project(model, tok, layer, hparams) -> Union[
             mom2_dtype=hparams.mom2_dtype,
             force_recompute=force_recompute,
         ).to("cuda")
-        U, S, _ = torch.linalg.svd(cov, full_matrices=False)
-        threshold = hparams.nullspace_threshold
-        small_singular_indices = (S < threshold).nonzero(as_tuple=True)[0]
-        print(
-            f"Layer name: {ln}, singular values less than the threshold size: {len(small_singular_indices)}"
-        )
-        projection = U[:, small_singular_indices] @ U[:, small_singular_indices].T
+        if use_svd:
+            U, S, _ = torch.linalg.svd(cov, full_matrices=False)
+            threshold = hparams.nullspace_threshold
+            small_singular_indices = (S < threshold).nonzero(as_tuple=True)[0]
+            projection = U[:, small_singular_indices] @ U[:, small_singular_indices].T
+            print(
+                f"Layer name: {ln}, singular values less than the threshold size: {len(small_singular_indices)}"
+            )
+        else:
+            start_time = time()
+            vals, vecs = torch.linalg.eigh(cov)
+            threshold = hparams.nullspace_threshold
+            small_eigenvalues_indices = (vals < threshold).nonzero(as_tuple=True)[0]
+            projection = (
+                vecs[:, small_eigenvalues_indices] @ vecs[:, small_eigenvalues_indices].T
+            )
+            end_time = time()
+            print(
+                f"Computed projection for layer {ln} in {end_time - start_time:.2f} seconds."
+            )
+            print(
+                f"Layer name: {ln}, eigenvalues less than the threshold size: {len(small_eigenvalues_indices)}"
+            )
         projections[ln] = projection
 
     return projections if len(projections) > 1 else projections[layer_name[0]]

@@ -21,11 +21,14 @@ from torch import Tensor
 from jaxtyping import Float
 from beartype import beartype as typechecker
 
-from peft import PeftModel
+from peft import PeftModel, TaskType, get_peft_model
+from peft.tuners.nullspacelora import NullSpaceLoraConfig
+from typing import Any
+from util.tok_dataset import flatten_masked_batch
 
 
 def compute_ks(
-    model: AutoModelForCausalLM,
+    peft_model: PeftModel,
     tok: AutoTokenizer,
     batch_data: list,
     hparams: unkeAlphaAREHyperParams,
@@ -37,14 +40,14 @@ def compute_ks(
 
     with torch.no_grad():
         with nethook.Trace(
-            module=model,
+            module=peft_model.model,
             layer=hparams.layer_module_tmp.format(layer),
             retain_input=True,
             retain_output=True,
             detach=True,
             clone=True,
         ) as tr:
-            _ = model(**input_ids)
+            peft_model(**input_ids)
             # layer_in_ks = tr.input #(bs:seq:h_dim)
             zs_out = tr.output  # (bs:seq:h_dim)
     zs_out = zs_out[0] if type(zs_out) is tuple else zs_out
@@ -84,12 +87,43 @@ def get_optimizer_params(model, encoder_lr, weight_decay=0.01):
 
 # @jaxtyped(typechecker=typechecker)
 def apply_unke_Alpha_ARE_to_model(
-    peft_model: PeftModel,
+    model: AutoModelForCausalLM,
     tok: AutoTokenizer,
     hparams: unkeAlphaAREHyperParams,
     batch_data: list,
-    ex_data: list,
+    # ex_data: list[str],
+    second_moment_map: dict[str, dict[str, Any]],
+    S_KpKp_map: dict[str, torch.Tensor],
+    S_KpVp_map: dict[str, torch.Tensor],
+    S_VpVp_map: dict[str, torch.Tensor],
+    S_count_map: dict[str, int],
 ):
+    task_type = TaskType.CAUSAL_LM
+    target_modules = [
+        tmp.format(layer)
+        for layer in hparams.layers
+        for tmp in hparams.rewrite_module_tmp
+    ]
+    peft_config = NullSpaceLoraConfig(
+        task_type=task_type,
+        r=hparams.r,
+        target_modules=target_modules,
+        lora_alpha=hparams.lora_alpha,
+        lora_dropout=hparams.lora_dropout,
+    )
+    peft_model = get_peft_model(model=model, peft_config=peft_config)
+    peft_model.set_lora_second_moment_map(
+        second_moment_map=second_moment_map, adapter_name="default"
+    )
+    peft_model.set_lora_S_KpKp_map(
+        S_KpKp_map=S_KpKp_map, S_count_map=S_count_map, adapter_name="default"
+    )
+    peft_model.set_lora_S_KpVp_map(
+        S_KpVp_map=S_KpVp_map, S_count_map=S_count_map, adapter_name="default"
+    )
+    peft_model.set_lora_S_VpVp_map(
+        S_VpVp_map=S_VpVp_map, S_count_map=S_count_map, adapter_name="default"
+    )
 
     preserve_params = []
     for name, params in peft_model.named_parameters():
@@ -111,7 +145,7 @@ def apply_unke_Alpha_ARE_to_model(
     for k, data in enumerate(batch_data):
 
         idxs_list, target_list = compute_z(
-            peft_model.model,
+            peft_model,
             tok,
             data,
             z_layer,
@@ -136,13 +170,15 @@ def apply_unke_Alpha_ARE_to_model(
                 detach=True,
                 clone=True,
             ) as tr:
-                _ = peft_model.model(**contexts_tok)
+                peft_model(**contexts_tok)
                 layer_in_ks = tr.input  # (bs:seq:h_dim)
                 layer_out_ks = tr.output  # (bs:seq:h_dim)
         layer_out_ks = layer_out_ks[0] if type(layer_out_ks) is tuple else layer_out_ks
 
+        layer_out_ks = layer_out_ks.clone().contiguous()
+
         cur_zs_dict = compute_ks(
-            peft_model.model, tok, batch_question_ans, hparams, z_layer, idxs_dict
+            peft_model, tok, batch_question_ans, hparams, z_layer, idxs_dict
         )
         targets_dict = {}
         for k, cur_zs_list in cur_zs_dict.items():
@@ -153,9 +189,9 @@ def apply_unke_Alpha_ARE_to_model(
             ]
             targets_dict[k] = targets_list
 
-        ex_tok = tok(ex_data, padding=True, return_tensors="pt").to(
-            next(peft_model.model.parameters()).device
-        )
+        # ex_tok = tok(ex_data, padding=True, return_tensors="pt").to(
+        #     next(peft_model.model.parameters()).device
+        # )
 
         # with torch.no_grad():
         #     with nethook.Trace(
@@ -166,7 +202,7 @@ def apply_unke_Alpha_ARE_to_model(
         #         detach=True,
         #         clone=True,
         #     ) as tr:
-        #         _ = peft_model.model(**ex_tok)
+        #         peft_model(**ex_tok)
         #         stat_in = tr.input
         #         stat_out = tr.output
         # stat_out = stat_out[0] if type(stat_out) is tuple else stat_out
@@ -181,7 +217,9 @@ def apply_unke_Alpha_ARE_to_model(
 
         for n, m in _layer.named_parameters():
 
-            m.requires_grad = True
+            # m.requires_grad = True
+            if any(k in n for k in ("lora_B", "lora_A")):
+                m.requires_grad = True
 
         params = get_optimizer_params(_layer, hparams.lr)
 
@@ -190,7 +228,7 @@ def apply_unke_Alpha_ARE_to_model(
         for k, idxs_list in idxs_dict.items():
             for j, idx in enumerate(idxs_list):
                 resid = targets_dict[k][j]
-                layer_out_ks[k, idx] += resid
+                layer_out_ks[k, idx] = layer_out_ks[k, idx] + resid
 
         # get_qwen2_causal_mask
         # llama2
@@ -231,16 +269,20 @@ def apply_unke_Alpha_ARE_to_model(
                     layer_out_ks,
                 )
 
-                regularization_loss = sum(
-                    [
-                        (delta_weight.norm() ** 2)
-                        for delta_weight in peft_model.get_delta_weights(
-                            adapter="default"
-                        ).values()
-                    ]
-                )
+                # regularization_loss = sum(
+                #     [
+                #         (delta_weight.norm() ** 2)
+                #         for delta_weight in peft_model.get_delta_weights(
+                #             adapter="default"
+                #         ).values()
+                #     ]
+                # )
 
-                loss = update_loss + hparams.L2 * regularization_loss
+                loss = (
+                    # preservation_loss +
+                    update_loss
+                    # + hparams.L2 * regularization_loss
+                )
                 # loss =  criterion(_layer(layer_in_ks,attention_mask=input_causal_mask,position_ids=input_position_ids)[0], layer_out_ks)
             elif hparams.model_name == "Llama3-8B-Instruct":
                 # preservation_loss = criterion(
@@ -263,7 +305,7 @@ def apply_unke_Alpha_ARE_to_model(
                     layer_out_ks,
                 )
 
-                regularization_loss = sum(
+                regularization_loss = hparams.L2 * sum(
                     [
                         (delta_weight.norm() ** 2)
                         for delta_weight in peft_model.get_delta_weights(
@@ -272,21 +314,59 @@ def apply_unke_Alpha_ARE_to_model(
                     ]
                 )
 
-                loss = update_loss + hparams.L2 * regularization_loss
+                # previous_loss = hparams.L2 * sum(
+                #     [
+                #         torch.trace(
+                #             delta_weight_K_p
+                #         )
+                #         for delta_weight_K_p in peft_model.get_delta_KpKp(
+                #             adapter="default"
+                #         ).values()
+                #     ]
+                # )
+
+                previous_loss = 5e-6 * sum(
+                    [
+                        trace_KpKp_VpVp
+                        for trace_KpKp_VpVp in peft_model.get_trace_KpKp_VpVp(
+                            adapter="default"
+                        ).values()
+                    ]
+                )
+
+                loss = (
+                    # preservation_loss +
+                    update_loss
+                    + regularization_loss
+                    + previous_loss
+                )
                 # loss = criterion(_layer(layer_in_ks,attention_mask=input_causal_mask,position_ids=input_position_ids,cache_position=input_cache_position)[0], layer_out_ks)
                 # loss = criterion(_layer(layer_in_ks,attention_mask=input_causal_mask,position_ids=input_position_ids,cache_position=input_cache_position)[0][:,-1], layer_out_ks[:,-1])
                 # loss = criterion(_layer(stat_in,attention_mask=ex_causal_mask,position_ids=ex_position_ids,cache_position = ex_cache_position)[0], stat_out)+criterion(_layer(layer_in_ks,attention_mask=input_causal_mask,position_ids=input_position_ids,cache_position=input_cache_position)[0][:,-1], layer_out_ks[:,-1])
 
-            loss.backward(retain_graph=True)
+            loss.backward()
             optimizer.step()
 
-            print(
-                "Step [{}/{}], Loss: {:.4f}, Layer: {}".format(
-                    step + 1, hparams.optim_num_step, loss.item(), layer
+            loss_item = loss.item()
+            break_at = 5e-5
+            if (
+                step % 10 == 0
+                or step == hparams.optim_num_step - 1
+                or loss_item < break_at
+            ):
+                print(
+                    "Step [{}/{}], Loss: {:.5f}, Update: {:.5f}, Regularization: {:.5f}, Previous: {:.5f}, Layer: {}".format(
+                        step + 1,
+                        hparams.optim_num_step,
+                        loss_item,
+                        update_loss.item(),
+                        regularization_loss.item(),
+                        previous_loss.item(),
+                        layer,
+                    )
                 )
-            )
-            # if loss.item() < 5e-5:
-            #     break
+            if loss_item < break_at:
+                break
 
         for x in [
             layer_in_ks,
@@ -296,6 +376,58 @@ def apply_unke_Alpha_ARE_to_model(
             x.cpu()
             del x
         torch.cuda.empty_cache()
+
+    peft_model.merge_and_unload()
+
+    with torch.no_grad():
+        with nethook.TraceDict(
+            module=peft_model.model,
+            layers=target_modules,
+            retain_input=True,
+            retain_output=True,
+            clone=True,
+            detach=True,
+            stop=True,
+        ) as tr:
+            peft_model(**contexts_tok)
+
+        # for layer_name in target_modules:
+        #     a = flatten_masked_batch(
+        #         tr[layer_name].output, contexts_tok["attention_mask"]
+        #     )
+        #     second_moment_map[layer_name]["mom2"] += a.t().mm(a)
+        #     second_moment_map[layer_name]["count"] += a.shape[0]
+
+        for layer_name in target_modules:
+            a = flatten_masked_batch(
+                tr[layer_name].input, contexts_tok["attention_mask"]
+            )
+            value = a.t().mm(a).to("cpu")
+            if S_KpKp_map[layer_name] is None:
+                S_KpKp_map[layer_name] = value
+            else:
+                S_KpKp_map[layer_name] += value
+
+            b = flatten_masked_batch(
+                tr[layer_name].output, contexts_tok["attention_mask"]
+            )
+            value = a.t().mm(b).to("cpu")
+            if S_KpVp_map[layer_name] is None:
+                S_KpVp_map[layer_name] = value
+            else:
+                S_KpVp_map[layer_name] += value
+
+            value = b.t().mm(b).to("cpu")
+            if S_VpVp_map[layer_name] is None:
+                S_VpVp_map[layer_name] = value
+            else:
+                S_VpVp_map[layer_name] += value
+
+            if S_count_map[layer_name] is None:
+                S_count_map[layer_name] = a.shape[0]
+            else:
+                # S_count_map[layer_name] += a.shape[0]
+                S_count_map[layer_name] = 1
 
     return weights_copy
 
