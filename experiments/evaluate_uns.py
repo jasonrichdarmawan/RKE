@@ -391,8 +391,7 @@ def main(
 
         edited_data.extend(ds)
     
-    sequential_str = "_sequential_" if sequential else "_"
-    path = str(run_dir / f"alg_name={alg_name}{sequential_str}ds_name={ds_name}_dataset_size_limit={dataset_size_limit}_num_edits={num_edits}.json")
+    path = str(run_dir / f"alg_name={alg_name}__sequential={int(sequential)}__ds_name={ds_name}__dataset_size_limit={dataset_size_limit}__num_edits={num_edits}.json")
     print(f"saving to {path}")
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as json_file:

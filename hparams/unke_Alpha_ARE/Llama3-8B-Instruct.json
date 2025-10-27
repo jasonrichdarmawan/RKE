@@ -6,7 +6,7 @@
     "clamp_norm_factor": 4,
     "layer_selection": "all",
     "fact_token": "last",
-    "lr": 4e-4,
+    "lr": 2e-4,
     "v_num_grad_steps": 25,
     "v_lr": 5e-1,
     "v_loss_layer": 31,
@@ -35,7 +35,7 @@
     "previous_scale": 5e-3,
     "window_size": 40,
     "overlap": 0,
-    "r": 256,
-    "lora_alpha": 1024,
+    "r": 1024,
+    "lora_alpha": 4096,
     "lora_dropout": 0.05
 }

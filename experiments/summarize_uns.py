@@ -7,6 +7,7 @@ import argparse
 import sys
 import os
 import pprint
+import re
 
 sys.setrecursionlimit(2000)
 
@@ -57,6 +58,22 @@ def calculate_metrics(data):
     temp_original["Bert Score"] = cosine_scores.diagonal().mean().item()
     return temp_original
 
+def parse_meta_from_filename(path: str) -> dict:
+    last_part = path.split('/')[-1].replace('.json', '')
+    # Split using double underscore between pairs
+    pairs = last_part.split('__')
+    meta = {}
+    for pair in pairs:
+        if '=' in pair:
+            key, value = pair.split('=', 1)
+            meta[key] = value
+
+    # Backward compatibility: infer ds_name if not present
+    if meta.get("ds_name", None) is None:
+        meta = {}
+        meta['ds_name'] = path.split("_")[-3]
+
+    return meta
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -70,7 +87,9 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    ds_name = args.file_path.split("_")[-3]
+    meta = parse_meta_from_filename(args.file_path)
+    print("Metadata extracted from filename:", meta)
+    ds_name = meta["ds_name"]
     with open(args.file_path, "r", encoding="utf-8") as json_file:
         data = json.load(json_file)
     # data = [i for i in data if 'sub_pred' in i.keys()]
@@ -135,13 +154,13 @@ if __name__ == "__main__":
                 )
                 bleu_scores_para.append(score_para)
 
-                score_sub = [
-                    sentence_bleu(
-                        [data[index]["sub_answer"][idx]], [data[index]["sub_pred"][idx]]
-                    )
-                    for idx in range(len(data[index]["sub_pred"]))
-                ]
-                bleu_scores_sub.extend(score_sub)
+            score_sub = [
+                sentence_bleu(
+                    [data[index]["sub_answer"][idx]], [data[index]["sub_pred"][idx]]
+                )
+                for idx in range(len(data[index]["sub_pred"]))
+            ]
+            bleu_scores_sub.extend(score_sub)
             scores = rouge.get_scores(
                 data[index]["original_prediction"], data[index]["answer"]
             )
