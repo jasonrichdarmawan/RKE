@@ -40,6 +40,9 @@ class unkeAlphaAREHyperParams(HyperParams):
     window_size: int
     overlap: int
 
+    # UnKeAlpha-specific
+    previous_scale: float
+
     # NullSpaceLoRA-specific
     r: int
     lora_alpha: int

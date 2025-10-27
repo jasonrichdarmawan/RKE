@@ -31,8 +31,12 @@ from unke_ARE import unkeAREHyperParams, apply_unke_ARE_to_model
 from util import nethook, set_seed
 from util.hparams import HyperParams
 from util.globals import *
+from util.tee import StreamToLogger
 
 from tabulate import tabulate
+
+import logging
+import sys
 
 # from glue_eval.glue_eval import GLUEEval
 ALG_DICT: dict[str, tuple[type[HyperParams], Callable[..., dict[str, Any]]]] = {
@@ -96,6 +100,17 @@ def main(
         run_id = 0
     run_dir = RESULTS_DIR / dir_name / f"run_{str(run_id).zfill(3)}"
     run_dir.mkdir(parents=True, exist_ok=True)
+
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="%(asctime)s:%(levelname)s:%(name)s:%(message)s",
+        filename=run_dir / "output.log",
+        filemode="w",
+    )
+    log = logging.getLogger("evaluate_uns")
+    sys.stdout = StreamToLogger(logger=log, level=logging.INFO, echo=sys.stdout)
+    sys.stderr = StreamToLogger(logger=log, level=logging.ERROR, echo=sys.stderr)
+
     print(f"Results will be stored at {run_dir}")
 
     params_path = HPARAMS_DIR / alg_name / hparams_fname
@@ -122,7 +137,7 @@ def main(
     ds_class = DS_DICT[ds_name]
     ds = ds_class(DATA_DIR, model_name=hparams.model_name, size=dataset_size_limit)
 
-    if alg_name in ["unke", "unke_ARE", "unke_Alpha", "unke_Alpha_ARE"]:
+    if alg_name in ["unke", "unke_ARE"]:
         with open(
             Path(DATA_DIR) / "alpaca_data.json", "r", encoding="utf-8"
         ) as json_file:
@@ -137,9 +152,8 @@ def main(
                 get_qwen_without_answer(i["instruction"] + i["input"]) + i["output"]
                 for i in ex_datas
             ]
-
     # Load null space projection matrices
-    if alg_name in ["AlphaEdit", "AlphaEdit_ARE"]:
+    elif alg_name in ["AlphaEdit", "AlphaEdit_ARE"]:
         name = model.config._name_or_path.rsplit("/")[-1]
         stats_dir = Path(STATS_DIR)
         file_extension = f"{name}/{hparams.mom2_dataset}_stats/null_space_project.pt"
@@ -157,11 +171,8 @@ def main(
             torch.save(P, filename)
         else:
             P = torch.load(filename)
+    # Load second moment statistics for unke_Alpha and unke_Alpha_ARE
     elif alg_name in ["unke_Alpha", "unke_Alpha_ARE"]:
-        name = model.config._name_or_path.rsplit("/")[-1]
-        stats_dir = Path(STATS_DIR)
-        file_extension = f"{name}/{hparams.mom2_dataset}_stats/null_space_project_unke_Alpha_eigendecomposition.pt"
-        filename = stats_dir / file_extension
         second_moment_map = {}
         S_KpKp_map = {}
         S_KpVp_map = {}
@@ -190,22 +201,6 @@ def main(
                 S_KpVp_map[layer_name] = None
                 S_VpVp_map[layer_name] = None
                 S_count_map[layer_name] = None
-
-        # task_type = TaskType.CAUSAL_LM
-        # target_modules = [
-        #     tmp.format(layer)
-        #     for layer in hparams.layers
-        #     for tmp in hparams.rewrite_module_tmp
-        # ]
-        # peft_config = NullSpaceLoraConfig(
-        #     task_type=task_type,
-        #     r=hparams.r,
-        #     target_modules=target_modules,
-        #     lora_alpha=hparams.lora_alpha,
-        #     lora_dropout=hparams.lora_dropout,
-        # )
-        # peft_model = get_peft_model(model=model, peft_config=peft_config)
-        # peft_model.set_lora_P_map(lora_P_map=P_map, adapter_name="default")
 
     batch_size = num_edits
     num_batches = len(ds) // batch_size + (1 if len(ds) % batch_size else 0)
@@ -238,9 +233,9 @@ def main(
         kwargs = {}
         if alg_name in ["unke", "unke_ARE"]:
             kwargs["ex_data"] = random.sample(ex_datas, 20)
-        if alg_name in ["AlphaEdit", "AlphaEdit_ARE"]:
+        elif alg_name in ["AlphaEdit", "AlphaEdit_ARE"]:
             kwargs["P"] = P
-        if alg_name in ["unke_Alpha", "unke_Alpha_ARE"]:
+        elif alg_name in ["unke_Alpha", "unke_Alpha_ARE"]:
             kwargs["second_moment_map"] = second_moment_map
             kwargs["S_KpKp_map"] = S_KpKp_map
             kwargs["S_KpVp_map"] = S_KpVp_map
@@ -275,7 +270,7 @@ def main(
                     question = tokenizer(
                         [data["question"]], return_tensors="pt", padding=True
                     )
-                # print(question.input_ids)
+                
                 with torch.no_grad():
                     generated_ids = model.generate(
                         input_ids=question["input_ids"].to("cuda"),
@@ -323,13 +318,9 @@ def main(
                         generated_ids, skip_special_tokens=True
                     )
 
-                    # if batch_index < 10 // batch_size + 1:
-                    #     print(f"question:{data['sub_question']}")
-                    #     print(output)
-
                     data["sub_pred"] = output
 
-                if batch_index < 10 // batch_size + 1:
+                if batch_index < 10 or batch_index // 10 == 0:
                     print_output(data=data)
 
             edited_data.extend(batch)
@@ -349,7 +340,7 @@ def main(
                 question = tokenizer(
                     [data["question"]], return_tensors="pt", padding=True
                 )
-            # print(question.input_ids)
+            
             with torch.no_grad():
                 generated_ids = model.generate(
                     input_ids=question["input_ids"].to("cuda"),
@@ -393,24 +384,15 @@ def main(
 
                 output = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
 
-                # if batch_index < 10 // batch_size + 1:
-                #     print(f"question:{data['sub_question']}")
-                #     print(output)
-
                 data["sub_pred"] = output
 
-            if batch_index < 10 // batch_size + 1:
+            if batch_index < 10 or batch_index // 10 == 0:
                 print_output(data=data)
 
         edited_data.extend(ds)
-    if sequential:
-        # path = f"output/{alg_name}_{hparams.model_name}_sequential_{ds_name}_{dataset_size_limit}_result.json"
-        path = f"output/previous_term_KpKp_no_divide_scale=5e-6_{alg_name}_{hparams.model_name}_sequential_{ds_name}_{dataset_size_limit}_result.json"
-    else:
-        if alg_name == "original":
-            path = f"output/original_{hparams.model_name}_{ds_name}_{dataset_size_limit}_result.json"
-        else:
-            path = f"output/{alg_name}_{hparams.model_name}_{ds_name}_{dataset_size_limit}_result.json"
+    
+    sequential_str = "_sequential_" if sequential else "_"
+    path = str(run_dir / f"alg_name={alg_name}{sequential_str}ds_name={ds_name}_dataset_size_limit={dataset_size_limit}_num_edits={num_edits}.json")
     print(f"saving to {path}")
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as json_file:

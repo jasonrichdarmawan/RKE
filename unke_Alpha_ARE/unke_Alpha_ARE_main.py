@@ -325,7 +325,7 @@ def apply_unke_Alpha_ARE_to_model(
                 #     ]
                 # )
 
-                previous_loss = 5e-6 * sum(
+                previous_loss = hparams.previous_scale * sum(
                     [
                         trace_KpKp_VpVp
                         for trace_KpKp_VpVp in peft_model.get_trace_KpKp_VpVp(
@@ -347,25 +347,26 @@ def apply_unke_Alpha_ARE_to_model(
             loss.backward()
             optimizer.step()
 
-            loss_item = loss.item()
+            update_loss_item = update_loss.item()
+            previous_loss_item = previous_loss.item()
             break_at = 5e-5
             if (
                 step % 10 == 0
                 or step == hparams.optim_num_step - 1
-                or loss_item < break_at
+                or (update_loss_item < break_at and previous_loss_item < break_at)
             ):
                 print(
                     "Step [{}/{}], Loss: {:.5f}, Update: {:.5f}, Regularization: {:.5f}, Previous: {:.5f}, Layer: {}".format(
                         step + 1,
                         hparams.optim_num_step,
-                        loss_item,
-                        update_loss.item(),
+                        loss.item(),
+                        update_loss,
                         regularization_loss.item(),
-                        previous_loss.item(),
+                        previous_loss_item,
                         layer,
                     )
                 )
-            if loss_item < break_at:
+            if update_loss_item < break_at and previous_loss_item < break_at:
                 break
 
         for x in [
@@ -426,8 +427,8 @@ def apply_unke_Alpha_ARE_to_model(
             if S_count_map[layer_name] is None:
                 S_count_map[layer_name] = a.shape[0]
             else:
-                # S_count_map[layer_name] += a.shape[0]
-                S_count_map[layer_name] = 1
+                S_count_map[layer_name] += a.shape[0]
+                # S_count_map[layer_name] = 1
 
     return weights_copy
 
