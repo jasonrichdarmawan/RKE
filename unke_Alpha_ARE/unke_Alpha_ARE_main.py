@@ -247,6 +247,9 @@ def apply_unke_Alpha_ARE_to_model(
             #     stat_in, ex_tok["attention_mask"]
             # )
 
+        best_loss = float("inf")
+        best_weights = None
+
         for step in range(hparams.optim_num_step):
             # scheduler.step()
             optimizer.zero_grad()
@@ -305,14 +308,13 @@ def apply_unke_Alpha_ARE_to_model(
                     layer_out_ks,
                 )
 
-                regularization_loss = hparams.L2 * sum(
-                    [
-                        (delta_weight.norm() ** 2)
-                        for delta_weight in peft_model.get_delta_weights(
-                            adapter="default"
-                        ).values()
-                    ]
-                )
+                if hparams.L2 == 0:
+                    regularization_loss = torch.tensor(0.0).to(update_loss.device)
+                else:
+                    regularization_loss = peft_model.get_delta_weights(adapter="default").values()
+                    regularization_loss = hparams.L2 * sum(
+                        [(delta_weight.norm() ** 2) for delta_weight in regularization_loss]
+                    ) / len(regularization_loss)
 
                 # previous_loss = hparams.L2 * sum(
                 #     [
@@ -325,14 +327,8 @@ def apply_unke_Alpha_ARE_to_model(
                 #     ]
                 # )
 
-                previous_loss = hparams.previous_scale * sum(
-                    [
-                        trace_KpKp_VpVp
-                        for trace_KpKp_VpVp in peft_model.get_trace_KpKp_VpVp(
-                            adapter="default"
-                        ).values()
-                    ]
-                )
+                previous_losses = peft_model.get_trace_KpKp_VpVp(adapter="default").values()
+                previous_loss = hparams.previous_scale * sum(previous_losses) / len(previous_losses)
 
                 loss = (
                     # preservation_loss +
@@ -366,8 +362,21 @@ def apply_unke_Alpha_ARE_to_model(
                         layer,
                     )
                 )
-            if update_loss_item < break_at and previous_loss_item < break_at:
+            edit_loss = update_loss_item + previous_loss_item
+            if edit_loss < best_loss:
+                best_loss = edit_loss
+                best_weights = {
+                    n: p.detach().cpu().clone() 
+                    for n, p in _layer.named_parameters()
+                    if any(k in n for k in ("lora_B", "lora_A"))
+                }
+            if (update_loss_item < break_at and previous_loss_item < break_at):
                 break
+
+        if best_weights is not None:
+            for n, p in _layer.named_parameters():
+                if n in best_weights:
+                    p.data.copy_(best_weights[n].to(p.device))
 
         for x in [
             layer_in_ks,

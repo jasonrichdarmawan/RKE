@@ -31,11 +31,11 @@
     "mom2_n_samples": 100000,
     "mom2_dtype": "float32",
     "nullspace_threshold": 2e-2,
-    "L2": 5e-8,
-    "previous_scale": 5e-3,
+    "L2": 0,
+    "previous_scale": 1,
     "window_size": 40,
     "overlap": 0,
-    "r": 1024,
-    "lora_alpha": 4096,
+    "r": 64,
+    "lora_alpha": 256,
     "lora_dropout": 0.05
 }
