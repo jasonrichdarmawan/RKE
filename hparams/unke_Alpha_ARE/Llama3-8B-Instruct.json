@@ -31,7 +31,7 @@
     "mom2_n_samples": 100000,
     "mom2_dtype": "float32",
     "nullspace_threshold": 2e-2,
-    "L2": 0,
+    "L2": 1,
     "previous_scale": 100,
     "window_size": 40,
     "overlap": 0,

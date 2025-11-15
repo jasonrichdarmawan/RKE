@@ -352,8 +352,9 @@ def apply_unke_Alpha_ARE_to_model(
                     delta_weights = peft_model.get_delta_weights(
                         adapter="default"
                     ).values()
-                    regs = [dw.pow(2).mean() for dw in delta_weights]
-                    regularization_loss = hparams.L2 * (sum(regs) / len(regs))
+                    all_sq = sum(dw.norm() ** 2 for dw in delta_weights)
+                    total_elems = sum(dw.numel() for dw in delta_weights)
+                    regularization_loss = hparams.L2 * (all_sq / total_elems)
 
                     # not normalized by param count
                     # regularization_loss = peft_model.get_delta_weights(adapter="default").values()
@@ -420,7 +421,7 @@ def apply_unke_Alpha_ARE_to_model(
                 )
             ):
                 print(
-                    "Step [{}], Loss: {:.5f}, Update: {:.5f}, Regularization: {:.5f}, Previous: {:.10f}, Layer: {}".format(
+                    "Step [{}], Loss: {:.5f}, Update: {:.5f}, Regularization: {:.10f}, Previous: {:.10f}, Layer: {}".format(
                         step + 1,
                         loss.item(),
                         update_loss,
