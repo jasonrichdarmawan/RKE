@@ -19,7 +19,7 @@ class unkeAlphaAREHyperParams(HyperParams):
     v_loss_layer: int
     v_weight_decay: float
     clamp_norm_factor: float
-    optim_num_step: int
+    early_stop_patience: int
     ex_data_num: int
     # Module templates
     rewrite_module_tmp: str

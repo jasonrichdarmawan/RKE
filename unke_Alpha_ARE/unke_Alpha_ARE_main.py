@@ -209,7 +209,8 @@ def apply_unke_Alpha_ARE_to_model(
 
         # resid = targets / (len(hparams.layers) - i)  # Distribute residual across layers(1,4096)
 
-        criterion = nn.MSELoss()
+        criterion = nn.MSELoss(reduction="none")
+        # criterion = nn.MSELoss()
 
         _layer = nethook.get_module(
             peft_model.model, hparams.layer_module_tmp.format(layer)
@@ -249,12 +250,31 @@ def apply_unke_Alpha_ARE_to_model(
 
         best_loss = float("inf")
         best_weights = None
-        patience = 40
+        patience = hparams.early_stop_patience
         no_improve_steps = 0
 
-        for step in range(hparams.optim_num_step):
+        update_loss_break_at = float("inf")
+        update_abs_floor = 5e-5  # absolute min MSE per element
+        update_abs_cap = 1e-4  # absolute max MSE per element
+        update_rel_frac = 5e-3  # fraction of initial update loss 0.5%
+
+        # warmup / previous-loss measurement
+        prev_history = []
+        prev_warmup_steps = 20
+        previous_loss_break_at = float("inf")
+        prev_abs_floor = 5e-5  # minimum absolute floor
+        prev_abs_cap = 1e-4  # maximum absolute cap
+        prev_rel_frac = 5e-3  # stop when loss drops to 0.5% of initial
+
+        step = 0
+        while True:
             # scheduler.step()
             optimizer.zero_grad()
+
+            token_mask = contexts_tok["attention_mask"].unsqueeze(-1)  # (bs:seq:1)
+            hidden_dim = layer_out_ks.shape[-1]
+            mask_expanded = token_mask.expand(-1, -1, hidden_dim)  # (bs:seq:h_dim)
+
             if hparams.model_name == "Qwen2.5-7B-Instruct":
                 # preservation_loss = criterion(
                 #     _layer(
@@ -300,24 +320,41 @@ def apply_unke_Alpha_ARE_to_model(
                 #     stat_out,
                 # )
 
-                update_loss = criterion(
-                    _layer(
-                        layer_in_ks,
-                        attention_mask=input_causal_mask,
-                        position_ids=input_position_ids,
-                        cache_position=input_cache_position,
-                    )[0],
-                    layer_out_ks,
+                pred = _layer(
+                    layer_in_ks,
+                    attention_mask=input_causal_mask,
+                    position_ids=input_position_ids,
+                    cache_position=input_cache_position,
                 )
+                pred = pred[0]  # (bs:seq:h_dim)
+
+                update_loss_per_elem = criterion(pred, layer_out_ks)  # (bs:seq:h_dim)
+
+                masked_loss = update_loss_per_elem * mask_expanded  # (bs:seq:h_dim)
+                denom = mask_expanded.sum().clamp_min(1.0)
+                update_loss = masked_loss.sum() / denom  # batch size, padding invariant
+
+                # Alternative way: batch size invariant but not padding invariant
+                # update_loss = criterion(
+                #     _layer(
+                #         layer_in_ks,
+                #         attention_mask=input_causal_mask,
+                #         position_ids=input_position_ids,
+                #         cache_position=input_cache_position,
+                #     )[0],
+                #     layer_out_ks,
+                # )
 
                 if hparams.L2 == 0:
                     regularization_loss = torch.tensor(0.0).to(update_loss.device)
                 else:
                     # use per-parameter mean squared value to be invariant to param count
-                    delta_weights = peft_model.get_delta_weights(adapter="default").values()
+                    delta_weights = peft_model.get_delta_weights(
+                        adapter="default"
+                    ).values()
                     regs = [dw.pow(2).mean() for dw in delta_weights]
                     regularization_loss = hparams.L2 * (sum(regs) / len(regs))
-                    
+
                     # not normalized by param count
                     # regularization_loss = peft_model.get_delta_weights(adapter="default").values()
                     # regularization_loss = hparams.L2 * sum(
@@ -335,8 +372,12 @@ def apply_unke_Alpha_ARE_to_model(
                 #     ]
                 # )
 
-                previous_losses = peft_model.get_previous_losses_with_trace(adapter="default").values()
-                previous_loss = hparams.previous_scale * sum(previous_losses) / len(previous_losses)
+                previous_losses = peft_model.get_previous_losses_with_trace(
+                    adapter="default"
+                ).values()
+                previous_loss = (
+                    hparams.previous_scale * sum(previous_losses) / len(previous_losses)
+                )
 
                 loss = (
                     # preservation_loss +
@@ -353,17 +394,34 @@ def apply_unke_Alpha_ARE_to_model(
 
             update_loss_item = update_loss.item()
             previous_loss_item = previous_loss.item()
-            update_loss_break_at = 5e-5
-            previous_loss_break_at = 5e-5
+
+            if step == 0:
+                rel_target = update_rel_frac * update_loss_item
+                update_loss_break_at = max(
+                    update_abs_floor, min(rel_target, update_abs_cap)
+                )
+
+            # different from update loss break
+            # because prev loss increase as update loss decrease
+            if step < prev_warmup_steps:
+                prev_history.append(previous_loss_item)
+                if step == prev_warmup_steps - 1:
+                    rel_target = prev_rel_frac * max(prev_history)
+                    previous_loss_break_at = prev_rel_frac * max(
+                        prev_abs_floor, min(rel_target, prev_abs_cap)
+                    )
+
             if (
                 step % 10 == 0
-                or step == hparams.optim_num_step - 1
-                or (update_loss_item < update_loss_break_at and previous_loss_item < previous_loss_break_at)
+                or step < prev_warmup_steps
+                or (
+                    update_loss_item < update_loss_break_at
+                    and previous_loss_item < previous_loss_break_at
+                )
             ):
                 print(
-                    "Step [{}/{}], Loss: {:.5f}, Update: {:.5f}, Regularization: {:.5f}, Previous: {:.10f}, Layer: {}".format(
+                    "Step [{}], Loss: {:.5f}, Update: {:.5f}, Regularization: {:.5f}, Previous: {:.10f}, Layer: {}".format(
                         step + 1,
-                        hparams.optim_num_step,
                         loss.item(),
                         update_loss,
                         regularization_loss.item(),
@@ -375,7 +433,7 @@ def apply_unke_Alpha_ARE_to_model(
             if edit_loss < best_loss:
                 best_loss = edit_loss
                 best_weights = {
-                    n: p.detach().cpu().clone() 
+                    n: p.detach().cpu().clone()
                     for n, p in _layer.named_parameters()
                     if any(k in n for k in ("lora_B", "lora_A"))
                 }
@@ -383,9 +441,17 @@ def apply_unke_Alpha_ARE_to_model(
             else:
                 no_improve_steps += 1
                 if no_improve_steps >= patience:
-                    print(f"No improvement for {patience} steps, stopping early at step {step}.")
+                    print(
+                        f"No improvement for {patience} steps, stopping early at step {step}."
+                    )
                     break
-            if update_loss_item < update_loss_break_at and previous_loss_item < previous_loss_break_at:
+
+            step += 1
+
+            if (
+                update_loss_item < update_loss_break_at
+                and previous_loss_item < previous_loss_break_at
+            ):
                 break
 
         if best_weights is not None:
