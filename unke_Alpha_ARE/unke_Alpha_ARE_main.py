@@ -408,7 +408,7 @@ def apply_unke_Alpha_ARE_to_model(
                 prev_history.append(previous_loss_item)
                 if step == prev_warmup_steps - 1:
                     rel_target = prev_rel_frac * max(prev_history)
-                    previous_loss_break_at = prev_rel_frac * max(
+                    previous_loss_break_at = max(
                         prev_abs_floor, min(rel_target, prev_abs_cap)
                     )
 
