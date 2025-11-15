@@ -127,6 +127,10 @@ def main(
         model_name,
         device_map="auto",
     )
+
+    # apply_algo expects padding_side="right", while evaluate should use left padding
+    # I was also confused why there is two tokenizers here
+    # I will not refactor now to avoid breaking existing code
     tok = AutoTokenizer.from_pretrained(model_name)
     tok.pad_token = tok.eos_token
     tokenizer = AutoTokenizer.from_pretrained(model_name, padding_side="left")
@@ -167,7 +171,7 @@ def main(
             )
             del W_out
             for i, layer in enumerate(hparams.layers):
-                P[i, :, :] = get_project(model, tok, layer, hparams)
+                P[i, :, :] = get_project(model, tokenizer, layer, hparams)
             torch.save(P, filename)
         else:
             P = torch.load(filename)
@@ -206,7 +210,7 @@ def main(
     num_batches = len(ds) // batch_size + (1 if len(ds) % batch_size else 0)
     edited_data = []
 
-    def print_output(data):
+    def print_output(data: dict):
         rows = []
         rows.append(["question", data["question"]])
         rows.append(["original_prediction", data["original_prediction"]])
@@ -221,8 +225,52 @@ def main(
         #         rows.append([f"sub_answer_{idx}", data["sub_answer"][idx]])
         print(tabulate(tabular_data=rows, tablefmt="plain"))
 
+    def evaluate(batch: list[dict]):
+        texts = []
+        for data in batch:
+            texts.append(data["question"])
+            if ds_name in ["unke", "cf"]:
+                texts.append(data["para_question"])
+            if ds_name in ["unke", "cf", "mquake"]:
+                texts.extend(data["sub_question"])
+
+        question = tokenizer(texts, return_tensors="pt", padding=True)
+        with torch.no_grad():
+            generated_ids = model.generate(
+                input_ids=question["input_ids"].to("cuda"),
+                attention_mask=question["attention_mask"].to("cuda"),
+                do_sample=False,
+                temperature=0.001,
+                max_new_tokens=512,
+            )
+        # slice off prompts for each item and assign back
+        generated_ids = [
+            output_ids[len(input_ids) :]
+            for input_ids, output_ids in zip(question["input_ids"], generated_ids)
+        ]
+        outputs = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
+
+        idx = 0
+        for data in batch:
+            # remove special tokens from answers
+            if hparams.model_name == "Llama3-8B-Instruct":
+                data["answer"] = data["answer"][: -len("<|eot_id|>")]
+            elif hparams.model_name == "Qwen2.5-7B-Instruct":
+                data["answer"] = data["answer"][: -len("<|im_end|>")]
+
+            data["original_prediction"] = outputs[idx]
+            idx += 1
+            if ds_name in ["unke", "cf"]:
+                data["para_prediction"] = outputs[idx]
+                idx += 1
+            if ds_name in ["unke", "cf", "mquake"]:
+                sub_q_len = len(data["sub_question"])
+                data["sub_pred"] = outputs[idx : idx + sub_q_len]
+                idx += sub_q_len
+
     glue_save_location = str(run_dir) + "/glue_eval/"
     os.makedirs(glue_save_location, exist_ok=True)
+
     cnt = 0
     for batch_index in tqdm(range(num_batches)):
         start_index = batch_index * batch_size
@@ -237,10 +285,12 @@ def main(
             kwargs["P"] = P
         elif alg_name in ["unke_Alpha", "unke_Alpha_ARE"]:
             kwargs["second_moment_map"] = second_moment_map
-            kwargs["S_KpKp_map"] = S_KpKp_map
-            kwargs["S_KpVp_map"] = S_KpVp_map
-            kwargs["S_VpVp_map"] = S_VpVp_map
-            kwargs["S_count_map"] = S_count_map
+
+            if sequential:
+                kwargs["S_KpKp_map"] = S_KpKp_map
+                kwargs["S_KpVp_map"] = S_KpVp_map
+                kwargs["S_VpVp_map"] = S_VpVp_map
+                kwargs["S_count_map"] = S_count_map
 
         start = time()
         if alg_name in [
@@ -259,140 +309,167 @@ def main(
 
         start = time()
         if not sequential:
-            for data in batch:
-                if ds_name in ["unke", "cf"]:
-                    question = tokenizer(
-                        [data["question"], data["para_question"]],
-                        return_tensors="pt",
-                        padding=True,
-                    )
-                else:
-                    question = tokenizer(
-                        [data["question"]], return_tensors="pt", padding=True
-                    )
-                
-                with torch.no_grad():
-                    generated_ids = model.generate(
-                        input_ids=question["input_ids"].to("cuda"),
-                        attention_mask=question["attention_mask"].to("cuda"),
-                        do_sample=True,
-                        temperature=0.001,
-                        max_new_tokens=512,
-                    )
-                generated_ids = [
-                    output_ids[len(input_ids) :]
-                    for input_ids, output_ids in zip(
-                        question["input_ids"], generated_ids
-                    )
-                ]
-                output = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
-                data["original_prediction"] = output[0]
-                if ds_name in ["unke", "cf"]:
-                    data["para_prediction"] = output[1]
-                if hparams.model_name == "Llama3-8B-Instruct":
-                    data["answer"] = data["answer"][: -len("<|eot_id|>")]
-                elif hparams.model_name == "Qwen2.5-7B-Instruct":
-                    data["answer"] = data["answer"][: -len("<|im_end|>")]
+            evaluate(batch=batch)
+            if cnt < 10:
+                print_output(data=data)
+            cnt += 1
 
-                if ds_name in ["unke", "cf", "mquake"]:
-                    question = tokenizer(
-                        data["sub_question"], return_tensors="pt", padding=True
-                    )
-                    with torch.no_grad():
-                        generated_ids = model.generate(
-                            input_ids=question["input_ids"].to("cuda"),
-                            attention_mask=question["attention_mask"].to("cuda"),
-                            do_sample=True,
-                            temperature=0.001,  # Analysis exp
-                            max_new_tokens=512,
-                        )
+            # remove later
+            # for data in batch:
+            #     if ds_name in ["unke", "cf"]:
+            #         question = tokenizer(
+            #             [data["question"], data["para_question"]],
+            #             return_tensors="pt",
+            #             padding=True,
+            #         )
+            #     else:
+            #         question = tokenizer(
+            #             [data["question"]], return_tensors="pt", padding=True
+            #         )
 
-                    generated_ids = [
-                        output_ids[len(input_ids) :]
-                        for input_ids, output_ids in zip(
-                            question["input_ids"], generated_ids
-                        )
-                    ]
+            #     with torch.no_grad():
+            #         generated_ids = model.generate(
+            #             input_ids=question["input_ids"].to("cuda"),
+            #             attention_mask=question["attention_mask"].to("cuda"),
+            #             do_sample=True,
+            #             temperature=0.001,
+            #             max_new_tokens=512,
+            #         )
+            #     generated_ids = [
+            #         output_ids[len(input_ids) :]
+            #         for input_ids, output_ids in zip(
+            #             question["input_ids"], generated_ids
+            #         )
+            #     ]
+            #     output = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
+            #     data["original_prediction"] = output[0]
+            #     if ds_name in ["unke", "cf"]:
+            #         data["para_prediction"] = output[1]
+            #     if hparams.model_name == "Llama3-8B-Instruct":
+            #         data["answer"] = data["answer"][: -len("<|eot_id|>")]
+            #     elif hparams.model_name == "Qwen2.5-7B-Instruct":
+            #         data["answer"] = data["answer"][: -len("<|im_end|>")]
 
-                    output = tokenizer.batch_decode(
-                        generated_ids, skip_special_tokens=True
-                    )
+            #     if ds_name in ["unke", "cf", "mquake"]:
+            #         question = tokenizer(
+            #             data["sub_question"], return_tensors="pt", padding=True
+            #         )
+            #         with torch.no_grad():
+            #             generated_ids = model.generate(
+            #                 input_ids=question["input_ids"].to("cuda"),
+            #                 attention_mask=question["attention_mask"].to("cuda"),
+            #                 do_sample=True,
+            #                 temperature=0.001,  # Analysis exp
+            #                 max_new_tokens=512,
+            #             )
 
-                    data["sub_pred"] = output
+            #         generated_ids = [
+            #             output_ids[len(input_ids) :]
+            #             for input_ids, output_ids in zip(
+            #                 question["input_ids"], generated_ids
+            #             )
+            #         ]
 
-                if batch_index < 10 or batch_index // 10 == 0:
-                    print_output(data=data)
+            #         output = tokenizer.batch_decode(
+            #             generated_ids, skip_special_tokens=True
+            #         )
+
+            #         data["sub_pred"] = output
+
+            #     if batch_index < 10 or batch_index // 10 == 0:
+            #         print_output(data=data)
 
             edited_data.extend(batch)
+
+            # Restore weights
             if alg_name != "original":
                 with torch.no_grad():
                     for k, v in weights_copy.items():
                         nethook.get_parameter(model, k)[...] = v.to("cuda")
+
     if sequential:
-        for data in ds:
-            if ds_name in ["unke", "cf"]:
-                question = tokenizer(
-                    [data["question"], data["para_question"]],
-                    return_tensors="pt",
-                    padding=True,
-                )
-            else:
-                question = tokenizer(
-                    [data["question"]], return_tensors="pt", padding=True
-                )
-            
-            with torch.no_grad():
-                generated_ids = model.generate(
-                    input_ids=question["input_ids"].to("cuda"),
-                    attention_mask=question["attention_mask"].to("cuda"),
-                    do_sample=True,
-                    temperature=0.001,
-                    max_new_tokens=512,
-                )
-            generated_ids = [
-                output_ids[len(input_ids) :]
-                for input_ids, output_ids in zip(question["input_ids"], generated_ids)
-            ]
-            output = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
-            data["original_prediction"] = output[0]
-            if ds_name in ["unke", "cf"]:
-                data["para_prediction"] = output[1]
-            if hparams.model_name == "Llama3-8B-Instruct":
-                data["answer"] = data["answer"][: -len("<|eot_id|>")]
-            elif hparams.model_name == "Qwen2.5-7B-Instruct":
-                data["answer"] = data["answer"][: -len("<|im_end|>")]
+        cnt = 0
+        for batch_index in tqdm(range(num_batches)):
+            start_index = batch_index * batch_size
+            end_index = start_index + batch_size
+            batch = ds[start_index:end_index]
 
-            if ds_name in ["unke", "cf", "mquake"]:
-                question = tokenizer(
-                    data["sub_question"], return_tensors="pt", padding=True
-                )
-                with torch.no_grad():
-                    generated_ids = model.generate(
-                        input_ids=question["input_ids"].to("cuda"),
-                        attention_mask=question["attention_mask"].to("cuda"),
-                        do_sample=True,
-                        temperature=0.001,  # Analysis exp
-                        max_new_tokens=512,
-                    )
+            evaluate(batch=batch)
+            if cnt < 10:
+                for data in batch:
+                    print_output(data=data)
+            cnt += len(batch)
 
-                generated_ids = [
-                    output_ids[len(input_ids) :]
-                    for input_ids, output_ids in zip(
-                        question["input_ids"], generated_ids
-                    )
-                ]
+            edited_data.extend(batch)
 
-                output = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
+        # remove later
+        # for data in ds:
+        #     if ds_name in ["unke", "cf"]:
+        #         question = tokenizer(
+        #             [data["question"], data["para_question"]],
+        #             return_tensors="pt",
+        #             padding=True,
+        #         )
+        #     else:
+        #         question = tokenizer(
+        #             [data["question"]], return_tensors="pt", padding=True
+        #         )
 
-                data["sub_pred"] = output
+        #     with torch.no_grad():
+        #         generated_ids = model.generate(
+        #             input_ids=question["input_ids"].to("cuda"),
+        #             attention_mask=question["attention_mask"].to("cuda"),
+        #             do_sample=True,
+        #             temperature=0.001,
+        #             max_new_tokens=512,
+        #         )
+        #     generated_ids = [
+        #         output_ids[len(input_ids) :]
+        #         for input_ids, output_ids in zip(question["input_ids"], generated_ids)
+        #     ]
+        #     output = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
+        #     data["original_prediction"] = output[0]
+        #     if ds_name in ["unke", "cf"]:
+        #         data["para_prediction"] = output[1]
+        #     if hparams.model_name == "Llama3-8B-Instruct":
+        #         data["answer"] = data["answer"][: -len("<|eot_id|>")]
+        #     elif hparams.model_name == "Qwen2.5-7B-Instruct":
+        #         data["answer"] = data["answer"][: -len("<|im_end|>")]
 
-            if batch_index < 10 or batch_index // 10 == 0:
-                print_output(data=data)
+        #     if ds_name in ["unke", "cf", "mquake"]:
+        #         question = tokenizer(
+        #             data["sub_question"], return_tensors="pt", padding=True
+        #         )
+        #         with torch.no_grad():
+        #             generated_ids = model.generate(
+        #                 input_ids=question["input_ids"].to("cuda"),
+        #                 attention_mask=question["attention_mask"].to("cuda"),
+        #                 do_sample=True,
+        #                 temperature=0.001,  # Analysis exp
+        #                 max_new_tokens=512,
+        #             )
 
-        edited_data.extend(ds)
-    
-    path = str(run_dir / f"alg_name={alg_name}__sequential={int(sequential)}__ds_name={ds_name}__dataset_size_limit={dataset_size_limit}__num_edits={num_edits}.json")
-    print(f"saving to {path}")
+        #         generated_ids = [
+        #             output_ids[len(input_ids) :]
+        #             for input_ids, output_ids in zip(
+        #                 question["input_ids"], generated_ids
+        #             )
+        #         ]
+
+        #         output = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
+
+        #         data["sub_pred"] = output
+
+        #     if batch_index < 10 or batch_index // 10 == 0:
+        #         print_output(data=data)
+
+        # edited_data.extend(ds)
+
+    path = str(
+        run_dir
+        / f"alg_name={alg_name}__sequential={int(sequential)}__ds_name={ds_name}__dataset_size_limit={dataset_size_limit}__num_edits={num_edits}.json"
+    )
+    print(f"Saving to {path}")
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as json_file:
         json.dump(edited_data, json_file, ensure_ascii=False, indent=4)
@@ -445,7 +522,8 @@ def get_project(model, tok, layer, hparams, use_svd=True) -> Union[
             threshold = hparams.nullspace_threshold
             small_eigenvalues_indices = (vals < threshold).nonzero(as_tuple=True)[0]
             projection = (
-                vecs[:, small_eigenvalues_indices] @ vecs[:, small_eigenvalues_indices].T
+                vecs[:, small_eigenvalues_indices]
+                @ vecs[:, small_eigenvalues_indices].T
             )
             end_time = time()
             print(
