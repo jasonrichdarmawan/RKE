@@ -38,7 +38,8 @@ from tabulate import tabulate
 import logging
 import sys
 
-# from glue_eval.glue_eval import GLUEEval
+from glue_eval.glue_eval import GLUEEval
+
 ALG_DICT: dict[str, tuple[type[HyperParams], Callable[..., dict[str, Any]]]] = {
     "original": (originalHyperParams, None),
     "unke_Alpha_ARE": (unkeAlphaAREHyperParams, apply_unke_Alpha_ARE_to_model),
@@ -78,10 +79,11 @@ def main(
     generation_test_interval: int,
     conserve_memory: bool,
     dir_name: str,
-    num_edits: int = 1,
-    use_cache: bool = False,
-    sequential: bool = False,
-    downstream_eval_steps: int = 0,
+    num_edits: int,
+    use_cache: bool,
+    restore_weights_each_edit: bool,
+    sequential_eval: bool,
+    downstream_eval_steps: int,
 ):
     set_seed()
     # Set algorithm-specific variables
@@ -271,7 +273,6 @@ def main(
     glue_save_location = str(run_dir) + "/glue_eval/"
     os.makedirs(glue_save_location, exist_ok=True)
 
-    cnt = 0
     for batch_index in tqdm(range(num_batches)):
         start_index = batch_index * batch_size
         end_index = start_index + batch_size
@@ -286,7 +287,14 @@ def main(
         elif alg_name in ["unke_Alpha", "unke_Alpha_ARE"]:
             kwargs["second_moment_map"] = second_moment_map
 
-            if sequential:
+            # if restore_weights_each_edit, there is no point to preserve
+            # prior edits
+            if restore_weights_each_edit:
+                kwargs["S_KpKp_map"] = S_KpKp_map.copy()
+                kwargs["S_KpVp_map"] = S_KpVp_map.copy()
+                kwargs["S_VpVp_map"] = S_VpVp_map.copy()
+                kwargs["S_count_map"] = S_count_map.copy()
+            else:
                 kwargs["S_KpKp_map"] = S_KpKp_map
                 kwargs["S_KpVp_map"] = S_KpVp_map
                 kwargs["S_VpVp_map"] = S_VpVp_map
@@ -308,166 +316,61 @@ def main(
         print(f"Execution took {exec_time:.1f}s")
 
         start = time()
-        if not sequential:
+        if not sequential_eval:
             evaluate(batch=batch)
-            if cnt < 10:
-                print_output(data=data)
-            cnt += 1
-
-            # remove later
-            # for data in batch:
-            #     if ds_name in ["unke", "cf"]:
-            #         question = tokenizer(
-            #             [data["question"], data["para_question"]],
-            #             return_tensors="pt",
-            #             padding=True,
-            #         )
-            #     else:
-            #         question = tokenizer(
-            #             [data["question"]], return_tensors="pt", padding=True
-            #         )
-
-            #     with torch.no_grad():
-            #         generated_ids = model.generate(
-            #             input_ids=question["input_ids"].to("cuda"),
-            #             attention_mask=question["attention_mask"].to("cuda"),
-            #             do_sample=True,
-            #             temperature=0.001,
-            #             max_new_tokens=512,
-            #         )
-            #     generated_ids = [
-            #         output_ids[len(input_ids) :]
-            #         for input_ids, output_ids in zip(
-            #             question["input_ids"], generated_ids
-            #         )
-            #     ]
-            #     output = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
-            #     data["original_prediction"] = output[0]
-            #     if ds_name in ["unke", "cf"]:
-            #         data["para_prediction"] = output[1]
-            #     if hparams.model_name == "Llama3-8B-Instruct":
-            #         data["answer"] = data["answer"][: -len("<|eot_id|>")]
-            #     elif hparams.model_name == "Qwen2.5-7B-Instruct":
-            #         data["answer"] = data["answer"][: -len("<|im_end|>")]
-
-            #     if ds_name in ["unke", "cf", "mquake"]:
-            #         question = tokenizer(
-            #             data["sub_question"], return_tensors="pt", padding=True
-            #         )
-            #         with torch.no_grad():
-            #             generated_ids = model.generate(
-            #                 input_ids=question["input_ids"].to("cuda"),
-            #                 attention_mask=question["attention_mask"].to("cuda"),
-            #                 do_sample=True,
-            #                 temperature=0.001,  # Analysis exp
-            #                 max_new_tokens=512,
-            #             )
-
-            #         generated_ids = [
-            #             output_ids[len(input_ids) :]
-            #             for input_ids, output_ids in zip(
-            #                 question["input_ids"], generated_ids
-            #             )
-            #         ]
-
-            #         output = tokenizer.batch_decode(
-            #             generated_ids, skip_special_tokens=True
-            #         )
-
-            #         data["sub_pred"] = output
-
-            #     if batch_index < 10 or batch_index // 10 == 0:
-            #         print_output(data=data)
+            if batch_index < 10:
+                for data in batch:
+                    print_output(data=data)
 
             edited_data.extend(batch)
 
-            # Restore weights
-            if alg_name != "original":
-                with torch.no_grad():
-                    for k, v in weights_copy.items():
-                        nethook.get_parameter(model, k)[...] = v.to("cuda")
+        if downstream_eval_steps > 0 and (batch_index + 1) % downstream_eval_steps == 0:
+            glue_results = {"edit_num": batch_index * batch_size, "batch_index": batch_index}
 
-    if sequential:
-        cnt = 0
+            record_path = glue_save_location + f"batch_index={batch_index}.json"
+            
+            glue_eval = GLUEEval(
+                model=model,
+                tokenizer=tok,
+                number_of_tests=100,
+            )
+            glue_results = glue_eval.evaluate(
+                glue_results=glue_results,
+                record_path=record_path,
+                nli_flag=True,
+                sst_flag=True,
+                cola_flag=True,
+                rte_flag=True,
+                mmlu_flag=True,
+                mrpc_flag=True,
+            )
+
+            output_filename = record_path.replace(".json", "_glue.json")
+            with open(output_filename, "w", encoding="utf-8") as f:
+                json.dump(glue_results, f, indent=4)
+
+        # Restore weights
+        if restore_weights_each_edit:
+            with torch.no_grad():
+                for k, v in weights_copy.items():
+                    nethook.get_parameter(model, k)[...] = v.to("cuda")
+
+    if sequential_eval:
         for batch_index in tqdm(range(num_batches)):
             start_index = batch_index * batch_size
             end_index = start_index + batch_size
             batch = ds[start_index:end_index]
 
             evaluate(batch=batch)
-            if cnt < 10:
+            if batch_index < 10:
                 for data in batch:
                     print_output(data=data)
-            cnt += len(batch)
 
             edited_data.extend(batch)
 
-        # remove later
-        # for data in ds:
-        #     if ds_name in ["unke", "cf"]:
-        #         question = tokenizer(
-        #             [data["question"], data["para_question"]],
-        #             return_tensors="pt",
-        #             padding=True,
-        #         )
-        #     else:
-        #         question = tokenizer(
-        #             [data["question"]], return_tensors="pt", padding=True
-        #         )
-
-        #     with torch.no_grad():
-        #         generated_ids = model.generate(
-        #             input_ids=question["input_ids"].to("cuda"),
-        #             attention_mask=question["attention_mask"].to("cuda"),
-        #             do_sample=True,
-        #             temperature=0.001,
-        #             max_new_tokens=512,
-        #         )
-        #     generated_ids = [
-        #         output_ids[len(input_ids) :]
-        #         for input_ids, output_ids in zip(question["input_ids"], generated_ids)
-        #     ]
-        #     output = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
-        #     data["original_prediction"] = output[0]
-        #     if ds_name in ["unke", "cf"]:
-        #         data["para_prediction"] = output[1]
-        #     if hparams.model_name == "Llama3-8B-Instruct":
-        #         data["answer"] = data["answer"][: -len("<|eot_id|>")]
-        #     elif hparams.model_name == "Qwen2.5-7B-Instruct":
-        #         data["answer"] = data["answer"][: -len("<|im_end|>")]
-
-        #     if ds_name in ["unke", "cf", "mquake"]:
-        #         question = tokenizer(
-        #             data["sub_question"], return_tensors="pt", padding=True
-        #         )
-        #         with torch.no_grad():
-        #             generated_ids = model.generate(
-        #                 input_ids=question["input_ids"].to("cuda"),
-        #                 attention_mask=question["attention_mask"].to("cuda"),
-        #                 do_sample=True,
-        #                 temperature=0.001,  # Analysis exp
-        #                 max_new_tokens=512,
-        #             )
-
-        #         generated_ids = [
-        #             output_ids[len(input_ids) :]
-        #             for input_ids, output_ids in zip(
-        #                 question["input_ids"], generated_ids
-        #             )
-        #         ]
-
-        #         output = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
-
-        #         data["sub_pred"] = output
-
-        #     if batch_index < 10 or batch_index // 10 == 0:
-        #         print_output(data=data)
-
-        # edited_data.extend(ds)
-
     path = str(
         run_dir
-        / f"alg_name={alg_name}__sequential={int(sequential)}__ds_name={ds_name}__dataset_size_limit={dataset_size_limit}__num_edits={num_edits}.json"
+        / f"alg_name={alg_name}__sequential={int(sequential_eval)}__ds_name={ds_name}__dataset_size_limit={dataset_size_limit}__num_edits={num_edits}.json"
     )
     print(f"Saving to {path}")
     Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -643,10 +546,20 @@ if __name__ == "__main__":
         help="Use cached k/v pairs",
     )
     parser.add_argument(
-        "--sequential",
-        dest="sequential",
+        "--restore_weights_each_edit",
         action="store_true",
-        help="sequential editing",
+        help="Restore weights after each edit",
+    )
+    parser.add_argument(
+        "--sequential_eval",
+        action="store_true",
+        help="Perform sequential evaluation",
+    )
+    parser.add_argument(
+        "--downstream_eval_steps",
+        type=int,
+        default=0,
+        help="Interval for downstream eval steps",
     )
 
     parser.set_defaults(skip_generation_tests=False, conserve_memory=False)
@@ -665,5 +578,7 @@ if __name__ == "__main__":
         dir_name=args.alg_name,
         num_edits=args.num_edits,
         use_cache=args.use_cache,
-        sequential=args.sequential,
+        restore_weights_each_edit=args.restore_weights_each_edit,
+        sequential_eval=args.sequential_eval,
+        downstream_eval_steps=args.downstream_eval_steps,
     )
