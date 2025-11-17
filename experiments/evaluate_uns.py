@@ -241,7 +241,7 @@ def main(
             generated_ids = model.generate(
                 input_ids=question["input_ids"].to("cuda"),
                 attention_mask=question["attention_mask"].to("cuda"),
-                do_sample=False,
+                do_sample=True,
                 temperature=0.001,
                 max_new_tokens=512,
             )

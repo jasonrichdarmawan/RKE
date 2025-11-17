@@ -208,6 +208,8 @@ def layer_stats(
         file_extension = f"{model_name}/{ds_name}_stats/{ln}_{precision}_{'-'.join(sorted(to_collect))}{size_suffix}.npz"
         filename = stats_dir / file_extension
 
+        print(filename, force_recompute)
+
         if progress is None:
             progress = lambda x: x
 

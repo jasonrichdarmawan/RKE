@@ -254,16 +254,16 @@ def apply_unke_Alpha_ARE_to_model(
         no_improve_steps = 0
 
         update_loss_break_at = float("inf")
-        update_abs_floor = 5e-5  # absolute min MSE per element
-        update_abs_cap = 1e-4  # absolute max MSE per element
+        update_abs_floor = 1e-5  # absolute min MSE per element
+        update_abs_cap = 5e-5  # absolute max MSE per element
         update_rel_frac = 5e-3  # fraction of initial update loss 0.5%
 
         # warmup / previous-loss measurement
         prev_history = []
         prev_warmup_steps = 20
         previous_loss_break_at = float("inf")
-        prev_abs_floor = 5e-5  # minimum absolute floor
-        prev_abs_cap = 1e-4  # maximum absolute cap
+        prev_abs_floor = 1e-6  # minimum absolute floor
+        prev_abs_cap = 5e-6  # maximum absolute cap
         prev_rel_frac = 5e-3  # stop when loss drops to 0.5% of initial
 
         step = 0
@@ -348,13 +348,21 @@ def apply_unke_Alpha_ARE_to_model(
                 if hparams.L2 == 0:
                     regularization_loss = torch.tensor(0.0).to(update_loss.device)
                 else:
-                    # use per-parameter mean squared value to be invariant to param count
-                    delta_weights = peft_model.get_delta_weights(
-                        adapter="default"
-                    ).values()
-                    all_sq = sum(dw.norm() ** 2 for dw in delta_weights)
-                    total_elems = sum(dw.numel() for dw in delta_weights)
+                    reg_dict = peft_model.get_regularization_losses_with_trace(adapter="default")
+                    all_sq = 0.0
+                    total_elems = 0
+                    for name, (trace, out_features) in reg_dict.items():
+                        all_sq += trace
+                        total_elems += out_features
                     regularization_loss = hparams.L2 * (all_sq / total_elems)
+
+                    # Alternative: less efficient, use per-parameter mean squared value to be invariant to param count
+                    # delta_weights = peft_model.get_delta_weights(
+                    #     adapter="default"
+                    # ).values()
+                    # all_sq = sum(dw.norm() ** 2 for dw in delta_weights)
+                    # total_elems = sum(dw.numel() for dw in delta_weights)
+                    # regularization_loss = hparams.L2 * (all_sq / total_elems)
 
                     # not normalized by param count
                     # regularization_loss = peft_model.get_delta_weights(adapter="default").values()
@@ -373,12 +381,19 @@ def apply_unke_Alpha_ARE_to_model(
                 #     ]
                 # )
 
-                previous_losses = peft_model.get_previous_losses_with_trace(
-                    adapter="default"
-                ).values()
-                previous_loss = (
-                    hparams.previous_scale * sum(previous_losses) / len(previous_losses)
-                )
+                prev_dict = peft_model.get_previous_losses_with_trace(adapter="default")
+                all_traces = 0.0
+                total_elems = 0
+                for name, (trace, out_features) in prev_dict.items():
+                    all_traces += trace
+                    total_elems += out_features
+                previous_loss = hparams.previous_scale * (all_traces / total_elems)
+                
+                # Alternative: simple mean over layers, not param invariant
+                # prev_dict = peft_model.get_previous_losses_with_trace(adapter="default").values()
+                # previous_loss = (
+                #     hparams.previous_scale * sum(prev_dict) / len(prev_dict)
+                # )
 
                 loss = (
                     # preservation_loss +
@@ -401,6 +416,7 @@ def apply_unke_Alpha_ARE_to_model(
                 update_loss_break_at = max(
                     update_abs_floor, min(rel_target, update_abs_cap)
                 )
+                print(f"Update loss break at: {update_loss_break_at}")
 
             # different from update loss break
             # because prev loss increase as update loss decrease
@@ -411,6 +427,7 @@ def apply_unke_Alpha_ARE_to_model(
                     previous_loss_break_at = max(
                         prev_abs_floor, min(rel_target, prev_abs_cap)
                     )
+                    print(f"Previous loss break at: {previous_loss_break_at}")
 
             if (
                 step % 10 == 0
