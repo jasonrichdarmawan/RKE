@@ -5,9 +5,9 @@ set -a
 source .env
 set +a
 
-dataset_size_limit=10
-num_edits=1
-downstream_eval_steps=5
+dataset_size_limit=9
+num_edits=3
+downstream_eval_steps=0
 model_name="meta-llama/Meta-Llama-3-8B-Instruct"
 hparams_fname="Llama3-8B-Instruct.json"
 ds_name="unke"
@@ -21,8 +21,11 @@ run_exp() {
         --ds_name "$ds_name" \
         --dataset_size_limit "$dataset_size_limit" \
         --num_edits "$num_edits" \
-        --downstream_eval_steps "$downstream_eval_steps"
+        --downstream_eval_steps "$downstream_eval_steps" \
+        --sequential_eval
 }
+
+# run_exp original
 
 # run_exp MEMIT
 # run_exp MEMIT_ARE
@@ -30,7 +33,8 @@ run_exp() {
 # run_exp AlphaEdit_ARE
 # run_exp unke
 # run_exp unke_ARE
-run_exp unke_Alpha
+
+# run_exp unke_Alpha
 run_exp unke_Alpha_ARE
 
 # flush disks and give logs a moment to finish
@@ -39,4 +43,4 @@ sleep 5
 
 echo "All experiments completed."
 
-runpodctl stop pod q27z8l6mtslzl3
+# runpodctl stop pod jev6cioait8hk9

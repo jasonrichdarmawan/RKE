@@ -208,8 +208,8 @@ def main(
                 S_VpVp_map[layer_name] = None
                 S_count_map[layer_name] = None
 
-    batch_size = num_edits
-    num_batches = len(ds) // batch_size + (1 if len(ds) % batch_size else 0)
+    # batch_size = num_edits
+    num_edit_batches = len(ds) // num_edits + (1 if len(ds) % num_edits else 0)
     edited_data = []
 
     def print_output(data: dict):
@@ -227,55 +227,61 @@ def main(
         #         rows.append([f"sub_answer_{idx}", data["sub_answer"][idx]])
         print(tabulate(tabular_data=rows, tablefmt="plain"))
 
-    def evaluate(batch: list[dict]):
-        texts = []
-        for data in batch:
-            texts.append(data["question"])
-            if ds_name in ["unke", "cf"]:
-                texts.append(data["para_question"])
-            if ds_name in ["unke", "cf", "mquake"]:
-                texts.extend(data["sub_question"])
+    def evaluate(batch: list[dict], eval_batch_size: int = 1):
+        eval_batches = len(batch) // eval_batch_size + (1 if len(batch) % eval_batch_size else 0)
+        for batch_index in tqdm(range(eval_batches), desc="Generating outputs"):
+            start_index = batch_index * eval_batch_size
+            end_index = start_index + eval_batch_size
+            sub_batch = batch[start_index:end_index]
 
-        question = tokenizer(texts, return_tensors="pt", padding=True)
-        with torch.no_grad():
-            generated_ids = model.generate(
-                input_ids=question["input_ids"].to("cuda"),
-                attention_mask=question["attention_mask"].to("cuda"),
-                do_sample=True,
-                temperature=0.001,
-                max_new_tokens=512,
-            )
-        # slice off prompts for each item and assign back
-        generated_ids = [
-            output_ids[len(input_ids) :]
-            for input_ids, output_ids in zip(question["input_ids"], generated_ids)
-        ]
-        outputs = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
+            texts = []
+            for data in sub_batch:
+                texts.append(data["question"])
+                if ds_name in ["unke", "cf"]:
+                    texts.append(data["para_question"])
+                if ds_name in ["unke", "cf", "mquake"]:
+                    texts.extend(data["sub_question"])
 
-        idx = 0
-        for data in batch:
-            # remove special tokens from answers
-            if hparams.model_name == "Llama3-8B-Instruct":
-                data["answer"] = data["answer"][: -len("<|eot_id|>")]
-            elif hparams.model_name == "Qwen2.5-7B-Instruct":
-                data["answer"] = data["answer"][: -len("<|im_end|>")]
+            question = tokenizer(texts, return_tensors="pt", padding=True)
+            with torch.no_grad():
+                generated_ids = model.generate(
+                    input_ids=question["input_ids"].to("cuda"),
+                    attention_mask=question["attention_mask"].to("cuda"),
+                    do_sample=True,
+                    temperature=0.001,
+                    max_new_tokens=512,
+                )
+            # slice off prompts for each item and assign back
+            generated_ids = [
+                output_ids[len(input_ids) :]
+                for input_ids, output_ids in zip(question["input_ids"], generated_ids)
+            ]
+            outputs = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
 
-            data["original_prediction"] = outputs[idx]
-            idx += 1
-            if ds_name in ["unke", "cf"]:
-                data["para_prediction"] = outputs[idx]
+            idx = 0
+            for data in sub_batch:
+                # remove special tokens from answers
+                if hparams.model_name == "Llama3-8B-Instruct":
+                    data["answer"] = data["answer"][: -len("<|eot_id|>")]
+                elif hparams.model_name == "Qwen2.5-7B-Instruct":
+                    data["answer"] = data["answer"][: -len("<|im_end|>")]
+
+                data["original_prediction"] = outputs[idx]
                 idx += 1
-            if ds_name in ["unke", "cf", "mquake"]:
-                sub_q_len = len(data["sub_question"])
-                data["sub_pred"] = outputs[idx : idx + sub_q_len]
-                idx += sub_q_len
+                if ds_name in ["unke", "cf"]:
+                    data["para_prediction"] = outputs[idx]
+                    idx += 1
+                if ds_name in ["unke", "cf", "mquake"]:
+                    sub_q_len = len(data["sub_question"])
+                    data["sub_pred"] = outputs[idx : idx + sub_q_len]
+                    idx += sub_q_len
 
     glue_save_location = str(run_dir) + "/glue_eval/"
     os.makedirs(glue_save_location, exist_ok=True)
 
-    for batch_index in tqdm(range(num_batches)):
-        start_index = batch_index * batch_size
-        end_index = start_index + batch_size
+    for edit_batch_index in tqdm(range(num_edit_batches)):
+        start_index = edit_batch_index * num_edits
+        end_index = start_index + num_edits
         batch = ds[start_index:end_index]
         # case_result_template = str(run_dir / "{}_edits-case_{}.json")
 
@@ -318,16 +324,16 @@ def main(
         start = time()
         if not sequential_eval:
             evaluate(batch=batch)
-            if batch_index < 10:
+            if edit_batch_index < 10:
                 for data in batch:
                     print_output(data=data)
 
             edited_data.extend(batch)
 
-        if downstream_eval_steps > 0 and (batch_index + 1) % downstream_eval_steps == 0:
-            glue_results = {"edit_num": batch_index * batch_size, "batch_index": batch_index}
+        if downstream_eval_steps > 0 and (edit_batch_index + 1) % downstream_eval_steps == 0:
+            glue_results = {"edit_num": edit_batch_index * num_edits, "batch_index": edit_batch_index}
 
-            record_path = glue_save_location + f"batch_index={batch_index}.json"
+            record_path = glue_save_location + f"batch_index={edit_batch_index}.json"
             
             glue_eval = GLUEEval(
                 model=model,
@@ -356,13 +362,13 @@ def main(
                     nethook.get_parameter(model, k)[...] = v.to("cuda")
 
     if sequential_eval:
-        for batch_index in tqdm(range(num_batches)):
-            start_index = batch_index * batch_size
-            end_index = start_index + batch_size
+        for edit_batch_index in tqdm(range(num_edit_batches)):
+            start_index = edit_batch_index * num_edits
+            end_index = start_index + num_edits
             batch = ds[start_index:end_index]
 
             evaluate(batch=batch)
-            if batch_index < 10:
+            if edit_batch_index < 10:
                 for data in batch:
                     print_output(data=data)
 

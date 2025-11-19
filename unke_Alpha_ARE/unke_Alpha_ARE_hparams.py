@@ -29,22 +29,32 @@ class unkeAlphaAREHyperParams(HyperParams):
     ln_f_module: str
     lm_head_module: str
 
-    # Alpha-specific
+    # NullSpaceLoRA-specific
     mom2_dataset: str
     mom2_n_samples: int
     mom2_dtype: str
     nullspace_threshold: float
-    L2: float # TODO: implement
 
-    # AnyEdit-specific
-    window_size: int
-    overlap: int
+    update_abs_floor: float
+    update_abs_cap: float
+    update_rel_frac: float
 
-    # UnKeAlpha-specific
+    L2: float
+    reg_warmup_steps: int
+    reg_abs_floor: float
+    reg_abs_cap: float
+    reg_rel_frac: float
+
     previous_scale: float
+    prev_warmup_steps: int
+    prev_abs_floor: float
+    prev_abs_cap: float
+    prev_rel_frac: float
 
-    # NullSpaceLoRA-specific
     r: int
     lora_alpha: int
     lora_dropout: float
 
+    # AnyEdit-specific
+    window_size: int
+    overlap: int

@@ -19,7 +19,7 @@ class unkeAlphaHyperParams(HyperParams):
     v_loss_layer: int
     v_weight_decay: float
     clamp_norm_factor: float
-    optim_num_step: int
+    early_stop_patience: int
     ex_data_num: int
     # Module templates
     rewrite_module_tmp: str
@@ -29,14 +29,24 @@ class unkeAlphaHyperParams(HyperParams):
     ln_f_module: str
     lm_head_module: str
 
-    # Alpha-specific
+    # NullSpaceLoRA-specific
     mom2_dataset: str
     mom2_n_samples: int
     mom2_dtype: str
     nullspace_threshold: float
-    L2: float # TODO: implement
 
-    # NullSpaceLoRA-specific
+    update_abs_floor: float
+    update_abs_cap: float
+    update_rel_frac: float
+
+    previous_scale: float
+    prev_warmup_steps: int
+    prev_abs_floor: float
+    prev_abs_cap: float
+    prev_rel_frac: float
+
+    L2: float
+
     r: int
     lora_alpha: int
     lora_dropout: float

@@ -164,4 +164,4 @@ def compute_z(
         f"Init norm {target_init.norm()} | Delta norm {delta.norm()} | Target norm {target.norm()}"
     )
 
-    return target
+    return target.detach().clone()
