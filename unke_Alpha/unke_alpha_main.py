@@ -254,6 +254,13 @@ def apply_unke_alpha_to_model(
         update_abs_cap = hparams.update_abs_cap # absolute max MSE per element
         update_rel_frac = hparams.update_rel_frac # fraction of initial update loss 0.5%
 
+        reg_history = []
+        reg_warmup_steps = hparams.reg_warmup_steps
+        reg_loss_break_at = float("inf")
+        reg_abs_floor = hparams.reg_abs_floor
+        reg_abs_cap = hparams.reg_abs_cap
+        reg_rel_frac = hparams.reg_rel_frac
+
         # warmup / previous-loss measurement
         prev_history = []
         prev_warmup_steps = hparams.prev_warmup_steps
@@ -391,6 +398,7 @@ def apply_unke_alpha_to_model(
 
             update_loss_item = update_loss.item()
             previous_loss_item = previous_loss.item()
+            reg_loss_item = regularization_loss.item()
 
             if step == 0:
                 rel_target = update_rel_frac * update_loss_item
@@ -398,6 +406,15 @@ def apply_unke_alpha_to_model(
                     update_abs_floor, min(rel_target, update_abs_cap)
                 )
                 print(f"Update loss break at: {update_loss_break_at}")
+
+            if step < reg_warmup_steps:
+                reg_history.append(regularization_loss.item())
+                if step == reg_warmup_steps - 1:
+                    rel_target = reg_rel_frac * max(reg_history)
+                    reg_loss_break_at = max(
+                        reg_abs_floor, min(rel_target, reg_abs_cap)
+                    )
+                    print(f"Regularization loss break at: {reg_loss_break_at}")
 
             # different from update loss break
             # because prev loss increase as update loss decrease
@@ -412,24 +429,29 @@ def apply_unke_alpha_to_model(
 
             if (
                 step % 10 == 0
+                or step < reg_warmup_steps
                 or step < prev_warmup_steps
                 or (
-                    update_loss_item < update_loss_break_at
+                    update_loss_break_at < float("inf")
+                    and reg_loss_break_at < float("inf")
+                    and previous_loss_break_at < float("inf")
+                    and update_loss_item < update_loss_break_at
+                    and reg_loss_item < reg_loss_break_at
                     and previous_loss_item < previous_loss_break_at
                 )
             ):
                 print(
-                    "Step [{}], Loss: {:.5f}, Update: {:.5f}, Regularization: {:.10f}, Previous: {:.10f}, Layer: {}".format(
+                    "Step [{}], Loss: {:.10f}, Update: {:.10f}, Regularization: {:.10f}, Previous: {:.10f}, Layer: {}".format(
                         step + 1,
                         loss.item(),
                         update_loss,
-                        regularization_loss.item(),
+                        reg_loss_item,
                         previous_loss_item,
                         layer,
                     )
                 )
 
-            edit_loss = update_loss_item + previous_loss_item
+            edit_loss = update_loss_item + reg_loss_item + previous_loss_item
             if edit_loss < best_loss:
                 best_loss = edit_loss
                 best_weights = {

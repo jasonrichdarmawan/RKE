@@ -39,13 +39,17 @@ class unkeAlphaHyperParams(HyperParams):
     update_abs_cap: float
     update_rel_frac: float
 
+    L2: float
+    reg_warmup_steps: int
+    reg_abs_floor: float
+    reg_abs_cap: float
+    reg_rel_frac: float
+
     previous_scale: float
     prev_warmup_steps: int
     prev_abs_floor: float
     prev_abs_cap: float
     prev_rel_frac: float
-
-    L2: float
 
     r: int
     lora_alpha: int

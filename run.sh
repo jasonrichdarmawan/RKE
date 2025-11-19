@@ -5,9 +5,9 @@ set -a
 source .env
 set +a
 
-dataset_size_limit=9
-num_edits=3
-downstream_eval_steps=0
+dataset_size_limit=10
+num_edits=1
+downstream_eval_steps=5
 model_name="meta-llama/Meta-Llama-3-8B-Instruct"
 hparams_fname="Llama3-8B-Instruct.json"
 ds_name="unke"
@@ -34,7 +34,7 @@ run_exp() {
 # run_exp unke
 # run_exp unke_ARE
 
-# run_exp unke_Alpha
+run_exp unke_Alpha
 run_exp unke_Alpha_ARE
 
 # flush disks and give logs a moment to finish
@@ -43,4 +43,4 @@ sleep 5
 
 echo "All experiments completed."
 
-# runpodctl stop pod jev6cioait8hk9
+runpodctl stop pod 2axnsmf5io5hnn
