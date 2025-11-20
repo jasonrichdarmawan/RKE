@@ -374,13 +374,16 @@ def apply_unke_alpha_to_model(
                 #     ]
                 # )
 
-                prev_dict = peft_model.get_previous_losses_with_trace(adapter="default")
-                all_traces = 0.0
-                total_elems = 0
-                for name, (trace, elems) in prev_dict.items():
-                    all_traces += trace
-                    total_elems += elems
-                previous_loss = hparams.previous_scale * (all_traces / total_elems)
+                if hparams.previous_scale == 0:
+                    previous_loss = torch.tensor(0.0).to(update_loss.device)
+                else:
+                    prev_dict = peft_model.get_previous_losses_with_trace(adapter="default")
+                    all_traces = 0.0
+                    total_elems = 0
+                    for name, (trace, elems) in prev_dict.items():
+                        all_traces += trace
+                        total_elems += elems
+                    previous_loss = hparams.previous_scale * (all_traces / total_elems)
 
                 loss = (
                     update_loss
@@ -394,6 +397,9 @@ def apply_unke_alpha_to_model(
                 # loss = criterion(_layer(stat_in,attention_mask=ex_causal_mask,position_ids=ex_position_ids,cache_position = ex_cache_position)[0], stat_out)+criterion(_layer(layer_in_ks,attention_mask=input_causal_mask,position_ids=input_position_ids,cache_position=input_cache_position)[0][:,-1], layer_out_ks[:,-1])
 
             loss.backward()
+
+            norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+
             optimizer.step()
 
             update_loss_item = update_loss.item()
@@ -441,12 +447,13 @@ def apply_unke_alpha_to_model(
                 )
             ):
                 print(
-                    "Step [{}], Loss: {:.10f}, Update: {:.10f}, Regularization: {:.10f}, Previous: {:.10f}, Layer: {}".format(
+                    "Step [{}], Loss: {:.10f}, Update: {:.10f}, Regularization: {:.10f}, Previous: {:.10f}, Norm: {:.10f}, Layer: {}".format(
                         step + 1,
                         loss.item(),
                         update_loss,
                         reg_loss_item,
                         previous_loss_item,
+                        norm,
                         layer,
                     )
                 )
