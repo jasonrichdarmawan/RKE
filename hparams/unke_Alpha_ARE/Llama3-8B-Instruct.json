@@ -36,7 +36,7 @@
     "update_rel_frac": 5e-3,
     "L2": 0,
     "reg_warmup_steps": 30,
-    "reg_abs_floor": 1e-5,
+    "reg_abs_floor": 2e-5,
     "reg_abs_cap": 5e-5,
     "reg_rel_frac": 5e-3,
     "previous_scale": 100,

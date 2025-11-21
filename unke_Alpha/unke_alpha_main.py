@@ -478,7 +478,11 @@ def apply_unke_alpha_to_model(
             step += 1
 
             if (
-                update_loss_item < update_loss_break_at
+                update_loss_break_at < float("inf")
+                and reg_loss_break_at < float("inf")
+                and previous_loss_break_at < float("inf")
+                and update_loss_item < update_loss_break_at
+                and reg_loss_item < reg_loss_break_at
                 and previous_loss_item < previous_loss_break_at
             ):
                 break

@@ -43,4 +43,4 @@ sleep 5
 
 echo "All experiments completed."
 
-# runpodctl stop pod 2axnsmf5io5hnn
+# runpodctl stop pod chmg7kduiok3rz
