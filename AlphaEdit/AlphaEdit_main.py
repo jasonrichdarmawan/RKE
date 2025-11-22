@@ -111,8 +111,8 @@ def apply_AlphaEdit_to_model(
         #     next(model.parameters()).device
         # )
         ks_list = []
-        for i in range(len(idxs)):
-            ks_list.append(layer_in_ks[i, idxs[i]])
+        for k in range(len(idxs)):
+            ks_list.append(layer_in_ks[k, idxs[k]])
         layer_ks = torch.stack(ks_list, dim=1)
 
         resid = targets / (len(hparams.layers) - i)  # Distribute residual across layers
