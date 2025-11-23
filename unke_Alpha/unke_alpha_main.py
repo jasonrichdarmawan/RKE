@@ -353,7 +353,7 @@ def apply_unke_alpha_to_model(
                     for name, (trace, out_features) in reg_dict.items():
                         all_sq += trace
                         total_elems += out_features
-                    regularization_loss = hparams.L2 * (all_sq / total_elems)
+                    regularization_loss = hparams.L2 * (all_sq / total_elems) / len(batch_data)
 
                     # Alternative way: not parameter count invariant
                     # regularization_loss = sum(
@@ -383,7 +383,7 @@ def apply_unke_alpha_to_model(
                     for name, (trace, elems) in prev_dict.items():
                         all_traces += trace
                         total_elems += elems
-                    previous_loss = hparams.previous_scale * (all_traces / total_elems)
+                    previous_loss = hparams.previous_scale * (all_traces / total_elems) / len(batch_data)
 
                 loss = (
                     update_loss
