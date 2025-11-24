@@ -143,7 +143,7 @@ def main(
     ds_class = DS_DICT[ds_name]
     ds = ds_class(DATA_DIR, model_name=hparams.model_name, size=dataset_size_limit)
 
-    if alg_name in ["unke", "unke_ARE"]:
+    if alg_name in ["unke", "unke_ARE", "unke_Alpha", "unke_Alpha_ARE"]:
         with open(
             Path(DATA_DIR) / "alpaca_data.json", "r", encoding="utf-8"
         ) as json_file:
@@ -159,7 +159,7 @@ def main(
                 for i in ex_datas
             ]
     # Load null space projection matrices
-    elif alg_name in ["AlphaEdit", "AlphaEdit_ARE"]:
+    if alg_name in ["AlphaEdit", "AlphaEdit_ARE"]:
         name = model.config._name_or_path.rsplit("/")[-1]
         stats_dir = Path(STATS_DIR)
         file_extension = f"{name}/{hparams.mom2_dataset}_stats/null_space_project.pt"
@@ -178,7 +178,7 @@ def main(
         else:
             P = torch.load(filename)
     # Load second moment statistics for unke_Alpha and unke_Alpha_ARE
-    elif alg_name in ["unke_Alpha", "unke_Alpha_ARE"]:
+    if alg_name in ["unke_Alpha", "unke_Alpha_ARE"]:
         second_moment_map = {}
         S_KpKp_map = {}
         S_KpVp_map = {}
@@ -286,11 +286,11 @@ def main(
         # case_result_template = str(run_dir / "{}_edits-case_{}.json")
 
         kwargs = {}
-        if alg_name in ["unke", "unke_ARE"]:
+        if alg_name in ["unke", "unke_ARE", "unke_Alpha", "unke_Alpha_ARE"]:
             kwargs["ex_data"] = random.sample(ex_datas, 20)
-        elif alg_name in ["AlphaEdit", "AlphaEdit_ARE"]:
+        if alg_name in ["AlphaEdit", "AlphaEdit_ARE"]:
             kwargs["P"] = P
-        elif alg_name in ["unke_Alpha", "unke_Alpha_ARE"]:
+        if alg_name in ["unke_Alpha", "unke_Alpha_ARE"]:
             kwargs["second_moment_map"] = second_moment_map
 
             # if restore_weights_each_edit, there is no point to preserve

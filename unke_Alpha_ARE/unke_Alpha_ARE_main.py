@@ -91,7 +91,7 @@ def apply_unke_Alpha_ARE_to_model(
     tok: AutoTokenizer,
     hparams: unkeAlphaAREHyperParams,
     batch_data: list,
-    # ex_data: list[str],
+    ex_data: list[str],
     second_moment_map: dict[str, dict[str, Any]],
     S_KpKp_map: dict[str, torch.Tensor],
     S_KpVp_map: dict[str, torch.Tensor],
@@ -192,23 +192,23 @@ def apply_unke_Alpha_ARE_to_model(
             ]
             targets_dict[k] = targets_list
 
-        # ex_tok = tok(ex_data, padding=True, return_tensors="pt").to(
-        #     next(peft_model.model.parameters()).device
-        # )
+        ex_tok = tok(ex_data, padding=True, return_tensors="pt").to(
+            next(peft_model.model.parameters()).device
+        )
 
-        # with torch.no_grad():
-        #     with nethook.Trace(
-        #         module=peft_model.model,
-        #         layer=hparams.layer_module_tmp.format(layer),
-        #         retain_input=True,
-        #         retain_output=True,
-        #         detach=True,
-        #         clone=True,
-        #     ) as tr:
-        #         peft_model(**ex_tok)
-        #         stat_in = tr.input
-        #         stat_out = tr.output
-        # stat_out = stat_out[0] if type(stat_out) is tuple else stat_out
+        with torch.no_grad():
+            with nethook.Trace(
+                module=peft_model.model,
+                layer=hparams.layer_module_tmp.format(layer),
+                retain_input=True,
+                retain_output=True,
+                detach=True,
+                clone=True,
+            ) as tr:
+                peft_model(**ex_tok)
+                stat_in = tr.input
+                stat_out = tr.output
+        stat_out = stat_out[0] if type(stat_out) is tuple else stat_out
 
         # resid = targets / (len(hparams.layers) - i)  # Distribute residual across layers(1,4096)
 
@@ -240,9 +240,9 @@ def apply_unke_Alpha_ARE_to_model(
             input_causal_mask, input_position_ids, input_cache_position = (
                 get_causal_mask(layer_in_ks, contexts_tok["attention_mask"])
             )
-            # ex_causal_mask, ex_position_ids, ex_cache_position = get_causal_mask(
-            #     stat_in, ex_tok["attention_mask"]
-            # )
+            ex_causal_mask, ex_position_ids, ex_cache_position = get_causal_mask(
+                stat_in, ex_tok["attention_mask"]
+            )
         elif hparams.model_name == "Qwen2.5-7B-Instruct":
             input_causal_mask, input_position_ids = get_qwen2_causal_mask(
                 layer_in_ks, contexts_tok["attention_mask"]
@@ -276,14 +276,18 @@ def apply_unke_Alpha_ARE_to_model(
         prev_abs_cap = hparams.prev_abs_cap  # maximum absolute cap
         prev_rel_frac = hparams.prev_rel_frac  # stop when loss drops to 0.5% of initial
 
+        token_mask = contexts_tok["attention_mask"].unsqueeze(-1)  # (bs:seq:1)
+        hidden_dim = layer_out_ks.shape[-1]
+        mask_expanded = token_mask.expand(-1, -1, hidden_dim)  # (bs:seq:h_dim)
+
+        ex_token_mask = ex_tok["attention_mask"].unsqueeze(-1)  # (bs:seq:1)
+        ex_hidden_dim = stat_out.shape[-1]
+        ex_mask_expanded = ex_token_mask.expand(-1, -1, ex_hidden_dim)  # (bs:seq:h_dim)
+
         step = 0
         while True:
             # scheduler.step()
             optimizer.zero_grad()
-
-            token_mask = contexts_tok["attention_mask"].unsqueeze(-1)  # (bs:seq:1)
-            hidden_dim = layer_out_ks.shape[-1]
-            mask_expanded = token_mask.expand(-1, -1, hidden_dim)  # (bs:seq:h_dim)
 
             if hparams.model_name == "Qwen2.5-7B-Instruct":
                 # preservation_loss = criterion(
@@ -358,13 +362,27 @@ def apply_unke_Alpha_ARE_to_model(
                 if hparams.L2 == 0:
                     regularization_loss = torch.tensor(0.0).to(update_loss.device)
                 else:
-                    reg_dict = peft_model.get_regularization_losses_with_trace(adapter="default")
-                    all_sq = torch.tensor(0.0).to(update_loss.device)
-                    total_elems = 0
-                    for name, (trace, elems) in reg_dict.items():
-                        all_sq += trace
-                        total_elems += elems
-                    regularization_loss = hparams.L2 * (all_sq / total_elems)
+                    ex_pred = _layer(
+                        stat_in,
+                        attention_mask=ex_causal_mask,
+                        position_ids=ex_position_ids,
+                        cache_position=ex_cache_position,
+                    )
+                    ex_pred = ex_pred[0]  # (bs:seq:h_dim)
+
+                    regularization_loss_per_elem = criterion(ex_pred, stat_out)  # (bs:seq:h_dim)
+
+                    ex_masked_loss = regularization_loss_per_elem * ex_mask_expanded  # (bs:seq:h_dim)
+                    denom = ex_mask_expanded.sum().clamp_min(1.0)
+                    regularization_loss = hparams.L2 * (ex_masked_loss.sum() / denom)  # batch size, padding invariant
+
+                    # reg_dict = peft_model.get_regularization_losses_with_trace(adapter="default")
+                    # all_sq = torch.tensor(0.0).to(update_loss.device)
+                    # total_elems = 0
+                    # for name, (trace, elems) in reg_dict.items():
+                    #     all_sq += trace
+                    #     total_elems += elems
+                    # regularization_loss = hparams.L2 * (all_sq / total_elems)
 
                     # Alternative: less efficient, use per-parameter mean squared value to be invariant to param count
                     # delta_weights = peft_model.get_delta_weights(adapter="default").values()
@@ -521,8 +539,6 @@ def apply_unke_Alpha_ARE_to_model(
             del x
         torch.cuda.empty_cache()
 
-    peft_model.merge_and_unload()
-
     with torch.no_grad():
         with nethook.TraceDict(
             module=peft_model.model,
@@ -572,6 +588,8 @@ def apply_unke_Alpha_ARE_to_model(
             else:
                 S_count_map[layer_name] += a.shape[0]
                 # S_count_map[layer_name] = 1
+
+    peft_model.merge_and_unload()
 
     return weights_copy
 
