@@ -45,7 +45,7 @@ def compute_ks(
             detach=True,
             clone=True,
         ) as tr:
-            _ = peft_model(**input_ids)
+            _ = peft_model.model(**input_ids, use_cache=False)
             # layer_in_ks = tr.input #(bs:seq:h_dim)
             zs_out = tr.output  # (bs:seq:h_dim)
     zs_out = zs_out[0] if type(zs_out) is tuple else zs_out
@@ -171,9 +171,10 @@ def apply_unke_alpha_to_model(
                 detach=True,
                 clone=True,
             ) as tr:
-                _ = peft_model(
+                _ = peft_model.model(
                     **contexts_tok,
                     # lora_K_p_attention_mask=contexts_tok["attention_mask"]
+                    use_cache=False,
                 )
                 layer_in_ks = tr.input  # (bs:seq:h_dim)
                 layer_out_ks = tr.output  # (bs:seq:h_dim)
@@ -197,7 +198,7 @@ def apply_unke_alpha_to_model(
                 detach=True,
                 clone=True,
             ) as tr:
-                _ = peft_model.model(**ex_tok)
+                _ = peft_model.model(**ex_tok, use_cache=False)
                 stat_in = tr.input
                 stat_out = tr.output
         stat_out = stat_out[0] if type(stat_out) is tuple else stat_out
@@ -531,7 +532,7 @@ def apply_unke_alpha_to_model(
             detach=True,
             stop=True,
         ) as tr:
-            peft_model(**contexts_tok)
+            peft_model.model(**contexts_tok, use_cache=False)
 
         # for layer_name in target_modules:
         #     a = flatten_masked_batch(

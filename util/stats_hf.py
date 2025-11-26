@@ -12,8 +12,8 @@ from huggingface_hub import HfApi
 # %%
 
 if is_notebook():
-    FOLDER_PATH = "/workspace/jason/AnyEdit/data/stats"
-    PATH_IN_REPO = "data/stats"
+    FOLDER_PATH = "/workspace/jason/AnyEdit/results"
+    PATH_IN_REPO = "results"
 
     # FOLDER_PATH = "/workspace/jason/AnyEdit/output"
     # PATH_IN_REPO = "output"

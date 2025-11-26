@@ -38,7 +38,7 @@ def compute_ks(
             detach=True,
             clone=True,
         ) as tr:
-            _ = model(**input_ids)
+            _ = model(**input_ids, use_cache=False)
             # layer_in_ks = tr.input #(bs:seq:h_dim)
             zs_out = tr.output  # (bs:seq:h_dim)
     zs_out = zs_out[0] if type(zs_out) is tuple else zs_out
@@ -126,7 +126,7 @@ def apply_unke_ARE_to_model(
                 detach=True,
                 clone=True,
             ) as tr:
-                _ = model(**contexts_tok)
+                _ = model(**contexts_tok, use_cache=False)
                 layer_in_ks = tr.input  # (bs:seq:h_dim)
                 layer_out_ks = tr.output  # (bs:seq:h_dim)
         layer_out_ks = layer_out_ks[0] if type(layer_out_ks) is tuple else layer_out_ks
@@ -156,7 +156,7 @@ def apply_unke_ARE_to_model(
                 detach=True,
                 clone=True,
             ) as tr:
-                _ = model(**ex_tok)
+                _ = model(**ex_tok, use_cache=False)
                 stat_in = tr.input
                 stat_out = tr.output
         stat_out = stat_out[0] if type(stat_out) is tuple else stat_out

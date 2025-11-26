@@ -279,7 +279,7 @@ def main(
     glue_save_location = str(run_dir) + "/glue_eval/"
     os.makedirs(glue_save_location, exist_ok=True)
 
-    for edit_batch_index in tqdm(range(num_edit_batches)):
+    for edit_batch_index in tqdm(range(num_edit_batches), desc="Edit batches"):
         start_index = edit_batch_index * num_edits
         end_index = start_index + num_edits
         batch = ds[start_index:end_index]
@@ -362,7 +362,7 @@ def main(
                     nethook.get_parameter(model, k)[...] = v.to("cuda")
 
     if sequential_eval:
-        for edit_batch_index in tqdm(range(num_edit_batches)):
+        for edit_batch_index in tqdm(range(num_edit_batches), desc="Evaluate batches"):
             start_index = edit_batch_index * num_edits
             end_index = start_index + num_edits
             batch = ds[start_index:end_index]
