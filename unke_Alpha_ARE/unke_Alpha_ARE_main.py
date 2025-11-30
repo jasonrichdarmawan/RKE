@@ -219,6 +219,7 @@ def apply_unke_Alpha_ARE_to_model(
             peft_model.model, hparams.layer_module_tmp.format(layer)
         )
 
+        print("trainable params count:", sum(p.requires_grad for p in peft_model.parameters()))
         for n, m in _layer.named_parameters():
 
             # m.requires_grad = True
@@ -533,7 +534,8 @@ def apply_unke_Alpha_ARE_to_model(
         for x in [
             layer_in_ks,
             layer_out_ks,
-            # stat_in, stat_out
+            stat_in, 
+            stat_out,
         ]:
             x.cpu()
             del x
@@ -589,7 +591,13 @@ def apply_unke_Alpha_ARE_to_model(
                 S_count_map[layer_name] += a.shape[0]
                 # S_count_map[layer_name] = 1
 
+            tr[layer_name].input = None
+            tr[layer_name].output = None
+            del a, b, value
+
     peft_model.merge_and_unload()
+
+    torch.cuda.empty_cache()
 
     return weights_copy
 

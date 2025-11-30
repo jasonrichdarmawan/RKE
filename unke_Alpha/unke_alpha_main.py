@@ -516,7 +516,8 @@ def apply_unke_alpha_to_model(
             layer_out_ks,
             cur_zs,
             targets,
-            # stat_in, stat_out
+            stat_in, 
+            stat_out,
         ]:
             x.cpu()
             del x
@@ -572,7 +573,13 @@ def apply_unke_alpha_to_model(
                 S_count_map[layer_name] += a.shape[0]
                 # S_count_map[layer_name] = 1
 
+            tr[layer_name].input = None
+            tr[layer_name].output = None
+            del a, b, value
+
     peft_model.merge_and_unload()
+
+    torch.cuda.empty_cache()
 
     return weights_copy
 
