@@ -164,10 +164,10 @@ def main(
         stats_dir = Path(STATS_DIR)
         file_extension = f"{name}/{hparams.mom2_dataset}_stats/null_space_project.pt"
         filename = stats_dir / file_extension
+        W_out = nethook.get_parameter(
+            model, f"{hparams.rewrite_module_tmp.format(hparams.layers[-1])}.weight"
+        )
         if not os.path.exists(filename):
-            W_out = nethook.get_parameter(
-                model, f"{hparams.rewrite_module_tmp.format(hparams.layers[-1])}.weight"
-            )
             P = torch.zeros(
                 (len(hparams.layers), W_out.shape[1], W_out.shape[1]), device="cpu"
             )
@@ -177,6 +177,7 @@ def main(
             torch.save(P, filename)
         else:
             P = torch.load(filename)
+        cache_c = torch.zeros((len(hparams.layers), W_out.shape[1], W_out.shape[1]), device="cpu")
     # Load second moment statistics for unke_Alpha and unke_Alpha_ARE
     if alg_name in ["unke_Alpha", "unke_Alpha_ARE"]:
         second_moment_map = {}
@@ -290,6 +291,7 @@ def main(
             kwargs["ex_data"] = random.sample(ex_datas, 20)
         if alg_name in ["AlphaEdit", "AlphaEdit_ARE"]:
             kwargs["P"] = P
+            kwargs["cache_c"] = cache_c
         if alg_name in ["unke_Alpha", "unke_Alpha_ARE"]:
             kwargs["second_moment_map"] = second_moment_map
 
