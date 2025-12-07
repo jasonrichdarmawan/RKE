@@ -1,63 +1,185 @@
-# AlphaEdit
-- Code for [``AnyEdit: Edit Any Knowledge Encoded in Language Models``]
+## Installation
 
-- In this work, we propose **AnyEdit**, a new autoregressive editing paradigm. It decomposes long-form knowledge into sequential chunks and iteratively edits the key token in each chunk, ensuring consistent and accurate outputs. Theoretically, we ground AnyEdit in the Chain Rule of Mutual Information, showing its ability to update any knowledge within LLMs. Empirically, it outperforms strong baselines by 21.5\% on benchmarks including UnKEBench, AKEW, and our new **EditEverything** dataset for long-form diverse-formatted knowledge. Additionally, AnyEdit serves as a plug-and-play framework, enabling current editing methods to update knowledge with arbitrary length and format, significantly advancing the scope and practicality of LLM knowledge editing.
+Please install mamba (a package manager) and tmux, then follow the following instructions:
 
-![alt text](anyedit_fig.png)
+1. Git clone, including the submodule
 
-## Requirements
-**One A100 80G GPU.**
+Note: This repository modified the `PEFT` library. The source code is available in the `peft` folder.
 
-- pytorch==1.12.1
-- einops==0.4.0
-- higher==0.2.1
-- hydra-core==1.2.0
-- transformers==4.40.1
-- datasets==3.6.0
-- matplotlib==3.6.1
-- spacy==3.4.1
-- scipy==1.9.2
-- scikit-learn==1.0.2
-- nltk==3.7
-- accelerate==1.10.1
+```
+git clone --recurse-submodules -j8 git@github.com:jasonrichdarmawan/RKE.git
+cd RKE
+```
 
-## Quick Start
-### An example for editing Llama3-8B-Instruct on UnKEBench dataset using AnyEdit
-#### 1. Edit Llama3-8B-Instruct 
- 
-    python3 -m experiments.evaluate_uns     --alg_name=MEMIT_ARE     --model_name=meta-llama/Meta-Llama-3-8B-Instruct     --hparams_fname=Llama3-8B-Instruct.json     --ds_name=unke     --dataset_size_limit=1000     --num_edits=1
+3. Install mamba (a package manager) and tmux
+```
+WORKSPACE=/workspace/jason
 
-This command runs an evaluation script for the NSE algorithm using the Llama3-8b-instruct. Below are the explanations for each argument:
+apt update
+apt install -y tmux nvtop htop
 
-- `--alg_name=MEMIT_ARE`: Specifies the name of the algorithm being used, which is MEMIT+AnyEdit in this case.
-- `--model_name=meta-llama/Meta-Llama-3-8B-Instruct`: Indicates the name of the model being evaluated, here it is Llama-3-8B-Instruct.
-- `--hparams_fname=Llama3-8B-Instruct.json`: Points to the JSON file containing hyperparameters specific to the Llama-3-8B-Instruct model.
-- `--ds_name=unke`: Specifies the dataset name, in this case, "unke".
-- `--dataset_size_limit=1000`: Sets the total number of editing samples to 2000.
-- `--num_edits=1`: Defines the batch size for each round of editing, meaning 1 edit will be performed in each batch. 
-#### 2. Summarize the results
+yes | "${SHELL}" <(curl -L micro.mamba.pm/install.sh)
+source ~/.bashrc
 
-    python -m experiments.summarize_uns --file_path=output/...
+cd $WORKSPACE
+tmux new -s jason
+```
 
-## Acknowledgment
-Our code is based on  [``MEMIT``](https://github.com/kmeng01/memit.git) and  [``UnKE``](https://github.com/TrustedLLM/UnKE.git).
+3. Install the python packages
+```
+tmux attach-session -t jason
 
-## Citation
+WORKSPACE=$PWD
 
-If you find this work useful, please cite our paper:
+micromamba create --prefix $WORKSPACE/rke-env python=3.12 -y
+micromamba activate $WORKSPACE/rke-env
 
-```bibtex
-@article{anyedit,
-  author       = {Houcheng Jiang and
-                  Junfeng Fang and
-                  Ningyu Zhang and
-                  Guojun Ma and
-                  Mingyang Wan and
-                  Xiang Wang and
-                  Xiangnan He and
-                  Tat{-}Seng Chua},
-  title        = {AnyEdit: Edit Any Knowledge Encoded in Language Models},
-  journal      = {CoRR},
-  volume       = {abs/2502.05628},
-  year         = {2025}
-}
+pip install "torch==2.8.0" --index-url https://download.pytorch.org/whl/cu126
+pip install "transformers[torch]==4.40.1"
+pip install "datasets==3.6.0"
+pip install "hf-transfer==0.1.9"
+pip install "peft==0.10.0"
+
+pip install "jaxtyping==0.3.3"
+pip install "beartype==0.22.2"
+
+pip install "python-dotenv==1.1.1"
+
+pip install "tabulate==0.9.0"
+pip install "ipykernel==6.30.1"
+
+pip install "einops==0.8.1"
+pip install "higher==0.2.1"
+pip install "hydra-core==1.3.2"
+pip install "matplotlib==3.10.7"
+pip install "spacy==3.8.7"
+pip install "scipy==1.16.2"
+pip install "scikit-learn==1.7.2"
+pip install "nltk==3.9.2"
+pip install "accelerate==1.10.1"
+
+pip install "rouge==1.0.1"
+pip install "sentence-transformers==3.1.1"
+```
+
+4. Activate the mamba environment
+```
+tmux attach-session -t jason
+
+WORKSPACE=/workspace/jason
+
+micromamba activate $WORKSPACE/rke-env
+
+cd $WORKSPACE/RKE
+```
+
+5. Prepare the `.env` and `.env_stats` file
+
+Note: For convenience, `.env` file is meant for Ours and `.env_stats` file is meant for baselines. The only difference is the `GLOBALS_YAML` variable value.
+
+`.env` file
+```
+HF_HOME=/workspace/jason/.cache/huggingface
+HF_TOKEN=
+
+CUDA_VISIBLE_DEVICES=0
+
+PROJECT_ROOT=/workspace/jason/RKE
+
+PYTHONPATH=/workspace/jason/RKE:/workspace/jason/RKE/peft/src:$PYTHONPATH
+
+GLOBALS_YAML=globals.yml
+```
+
+`.env_stats`
+```
+HF_HOME=/workspace/jason/.cache/huggingface
+HF_TOKEN=
+
+CUDA_VISIBLE_DEVICES=0
+
+PROJECT_ROOT=/workspace/jason/RKE
+
+PYTHONPATH=/workspace/jason/RKE:/workspace/jason/RKE/peft/src:$PYTHONPATH
+
+GLOBALS_YAML=globals_stats.yml
+```
+
+## Usage
+
+To generate the output for evaluation, run the following:
+
+1. Original outputs
+```
+set -a
+source .env
+set +a
+
+dataset_size_limit=1000
+num_edits=20
+downstream_eval_steps=5
+hparams_fname=Llama3-8B-Instruct.json
+ds_name=unke
+
+alg_name=original
+
+python3 -m experiments.evaluate_uns     --alg_name=$alg_name     --model_name=meta-llama/Meta-Llama-3-8B-Instruct     --hparams_fname=Llama3-8B-Instruct.json     --ds_name=unke     --dataset_size_limit=$dataset_size_limit     --num_edits=$num_edits     --downstream_eval_steps=$downstream_eval_steps     --sequential_eval
+```
+
+2. Ours outputs
+```
+set -a
+source .env
+set +a
+
+dataset_size_limit=1000
+num_edits=20
+downstream_eval_steps=5
+hparams_fname=Llama3-8B-Instruct.json
+ds_name=unke
+
+alg_name=unke
+
+python3 -m experiments.evaluate_uns     --alg_name=$alg_name     --model_name=meta-llama/Meta-Llama-3-8B-Instruct     --hparams_fname=Llama3-8B-Instruct.json     --ds_name=unke     --dataset_size_limit=$dataset_size_limit     --num_edits=$num_edits     --downstream_eval_steps=$downstream_eval_steps     --sequential_eval
+
+alg_name=unke_ARE
+
+python3 -m experiments.evaluate_uns     --alg_name=$alg_name     --model_name=meta-llama/Meta-Llama-3-8B-Instruct     --hparams_fname=Llama3-8B-Instruct.json     --ds_name=unke     --dataset_size_limit=$dataset_size_limit     --num_edits=$num_edits     --downstream_eval_steps=$downstream_eval_steps     --sequential_eval
+
+alg_name=unke_Alpha
+
+python3 -m experiments.evaluate_uns     --alg_name=$alg_name     --model_name=meta-llama/Meta-Llama-3-8B-Instruct     --hparams_fname=Llama3-8B-Instruct.json     --ds_name=unke     --dataset_size_limit=$dataset_size_limit     --num_edits=$num_edits     --downstream_eval_steps=$downstream_eval_steps     --sequential_eval
+
+alg_name=unke_Alpha_ARE
+
+python3 -m experiments.evaluate_uns     --alg_name=$alg_name     --model_name=meta-llama/Meta-Llama-3-8B-Instruct     --hparams_fname=Llama3-8B-Instruct.json     --ds_name=unke     --dataset_size_limit=$dataset_size_limit     --num_edits=$num_edits     --downstream_eval_steps=$downstream_eval_steps     --sequential_eval
+```
+
+3. Baselines outputs
+```
+set -a
+source .env_stats
+set +a
+
+dataset_size_limit=1000
+num_edits=20
+downstream_eval_steps=5
+hparams_fname=Llama3-8B-Instruct.json
+ds_name=unke
+
+alg_name=MEMIT
+
+python3 -m experiments.evaluate_uns     --alg_name=$alg_name     --model_name=meta-llama/Meta-Llama-3-8B-Instruct     --hparams_fname=Llama3-8B-Instruct.json     --ds_name=unke     --dataset_size_limit=$dataset_size_limit     --num_edits=$num_edits     --downstream_eval_steps=$downstream_eval_steps     --sequential_eval
+
+alg_name=MEMIT_ARE
+
+python3 -m experiments.evaluate_uns     --alg_name=$alg_name     --model_name=meta-llama/Meta-Llama-3-8B-Instruct     --hparams_fname=Llama3-8B-Instruct.json     --ds_name=unke     --dataset_size_limit=$dataset_size_limit     --num_edits=$num_edits     --downstream_eval_steps=$downstream_eval_steps     --sequential_eval
+
+alg_name=AlphaEdit
+
+python3 -m experiments.evaluate_uns     --alg_name=$alg_name     --model_name=meta-llama/Meta-Llama-3-8B-Instruct     --hparams_fname=Llama3-8B-Instruct.json     --ds_name=unke     --dataset_size_limit=$dataset_size_limit     --num_edits=$num_edits     --downstream_eval_steps=$downstream_eval_steps     --sequential_eval
+
+alg_name=AlphaEdit_ARE
+
+python3 -m experiments.evaluate_uns     --alg_name=$alg_name     --model_name=meta-llama/Meta-Llama-3-8B-Instruct     --hparams_fname=Llama3-8B-Instruct.json     --ds_name=unke     --dataset_size_limit=$dataset_size_limit     --num_edits=$num_edits     --downstream_eval_steps=$downstream_eval_steps     --sequential_eval
+```
