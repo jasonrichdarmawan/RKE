@@ -291,7 +291,13 @@ def main(
             kwargs["ex_data"] = random.sample(ex_datas, 20)
         if alg_name in ["AlphaEdit", "AlphaEdit_ARE"]:
             kwargs["P"] = P
-            kwargs["cache_c"] = cache_c
+
+            # if restore_weights_each_edit, there is no point to preserve
+            # prior edits
+            if restore_weights_each_edit:
+                kwargs["cache_c"] = cache_c.clone()
+            else:
+                kwargs["cache_c"] = cache_c
         if alg_name in ["unke_Alpha", "unke_Alpha_ARE"]:
             kwargs["second_moment_map"] = second_moment_map
 
