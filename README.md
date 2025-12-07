@@ -7,13 +7,13 @@ Please install mamba (a package manager) and tmux, then follow the following ins
 Note: This repository modified the `PEFT` library. The source code is available in the `peft` folder.
 
 ```
-git clone --recurse-submodules -j8 git@github.com:jasonrichdarmawan/RKE.git
+git clone --recurse-submodules -j8 [URL]
 cd RKE
 ```
 
 3. Install mamba (a package manager) and tmux
 ```
-WORKSPACE=/workspace/jason
+WORKSPACE=/workspace/rke
 
 apt update
 apt install -y tmux nvtop htop
@@ -22,12 +22,12 @@ yes | "${SHELL}" <(curl -L micro.mamba.pm/install.sh)
 source ~/.bashrc
 
 cd $WORKSPACE
-tmux new -s jason
+tmux new -s rke
 ```
 
 3. Install the python packages
 ```
-tmux attach-session -t jason
+tmux attach-session -t rke
 
 WORKSPACE=$PWD
 
@@ -64,9 +64,9 @@ pip install "sentence-transformers==3.1.1"
 
 4. Activate the mamba environment
 ```
-tmux attach-session -t jason
+tmux attach-session -t rke
 
-WORKSPACE=/workspace/jason
+WORKSPACE=/workspace/rke
 
 micromamba activate $WORKSPACE/rke-env
 
@@ -79,28 +79,28 @@ Note: For convenience, `.env` file is meant for Ours and `.env_stats` file is me
 
 `.env` file
 ```
-HF_HOME=/workspace/jason/.cache/huggingface
+HF_HOME=/workspace/rke/.cache/huggingface
 HF_TOKEN=
 
 CUDA_VISIBLE_DEVICES=0
 
-PROJECT_ROOT=/workspace/jason/RKE
+PROJECT_ROOT=/workspace/rke/RKE
 
-PYTHONPATH=/workspace/jason/RKE:/workspace/jason/RKE/peft/src:$PYTHONPATH
+PYTHONPATH=/workspace/rke/RKE:/workspace/rke/RKE/peft/src:$PYTHONPATH
 
 GLOBALS_YAML=globals.yml
 ```
 
 `.env_stats`
 ```
-HF_HOME=/workspace/jason/.cache/huggingface
+HF_HOME=/workspace/rke/.cache/huggingface
 HF_TOKEN=
 
 CUDA_VISIBLE_DEVICES=0
 
-PROJECT_ROOT=/workspace/jason/RKE
+PROJECT_ROOT=/workspace/rke/RKE
 
-PYTHONPATH=/workspace/jason/RKE:/workspace/jason/RKE/peft/src:$PYTHONPATH
+PYTHONPATH=/workspace/rke/RKE:/workspace/rke/RKE/peft/src:$PYTHONPATH
 
 GLOBALS_YAML=globals_stats.yml
 ```
