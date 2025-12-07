@@ -1,0 +1,11 @@
+__pycache__
+.ipynb_checkpoints
+data/stats
+data/stats_*
+.env
+.env_*
+output
+*.pt
+*.log
+results
+logs

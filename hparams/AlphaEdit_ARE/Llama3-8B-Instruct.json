@@ -23,5 +23,6 @@
     "nullspace_threshold":2e-2,
     "L2":10,
     "window_size": 40,
-    "overlap": 0
+    "overlap": 0,
+    "use_cache_c": true
 }

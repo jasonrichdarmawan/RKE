@@ -2,7 +2,11 @@ from pathlib import Path
 
 import yaml
 
-with open("globals.yml", "r") as stream:
+import os
+
+globals_filename = os.getenv("GLOBALS_YAML", "globals.yml")
+
+with open(globals_filename, "r") as stream:
     data = yaml.safe_load(stream)
 
 (RESULTS_DIR, DATA_DIR, STATS_DIR, HPARAMS_DIR, KV_DIR) = (

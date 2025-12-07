@@ -12,9 +12,15 @@ import argparse
 
 import numpy as np
 import os
-from transformers.modeling_attn_mask_utils import AttentionMaskConverter,_prepare_4d_causal_attention_mask
+from transformers.modeling_attn_mask_utils import (
+    AttentionMaskConverter,
+    _prepare_4d_causal_attention_mask,
+)
 from .AlphaEdit_hparams import AlphaEditHyperParams
+
 COV_CACHE = {}
+
+
 def compute_ks(
     model: AutoModelForCausalLM,
     tok: AutoTokenizer,
@@ -22,8 +28,8 @@ def compute_ks(
     hparams: AlphaEditHyperParams,
     layer: int,
 ):
-    input_ids = tok(batch_data, padding=True,return_tensors="pt").to("cuda")
-    idxs = [i.sum()-1 for i in input_ids['attention_mask']]
+    input_ids = tok(batch_data, padding=True, return_tensors="pt").to("cuda")
+    idxs = [i.sum() - 1 for i in input_ids["attention_mask"]]
     with torch.no_grad():
         with nethook.Trace(
             module=model,
@@ -32,26 +38,27 @@ def compute_ks(
             retain_output=True,
             detach=True,
             clone=True,
-            ) as tr:
-                _ = model(**input_ids)
-                #layer_in_ks = tr.input #(bs:seq:h_dim)
-                zs_out = tr.output#(bs:seq:h_dim)
+        ) as tr:
+            _ = model(**input_ids)
+            # layer_in_ks = tr.input #(bs:seq:h_dim)
+            zs_out = tr.output  # (bs:seq:h_dim)
     zs_out = zs_out[0] if type(zs_out) is tuple else zs_out
-    zs_out_list=[]
+    zs_out_list = []
     for i in range(len(zs_out)):
-        zs_out_list.append(zs_out[i,idxs[i]])
-    zs_out =torch.stack(zs_out_list,dim=0)
+        zs_out_list.append(zs_out[i, idxs[i]])
+    zs_out = torch.stack(zs_out_list, dim=0)
 
-
-    return zs_out,idxs
+    return zs_out, idxs
 
 
 def apply_AlphaEdit_to_model(
     model: AutoModelForCausalLM,
     tok: AutoTokenizer,
-    hparams:AlphaEditHyperParams,
-    batch_data:list,
-    P = None,):
+    hparams: AlphaEditHyperParams,
+    batch_data: list,
+    P=None,
+    cache_c=None,
+):
 
     weights = {
         f"{hparams.rewrite_module_tmp.format(layer)}.weight": nethook.get_parameter(
@@ -62,14 +69,11 @@ def apply_AlphaEdit_to_model(
     # Save old weights for future restoration
     weights_copy = {k: v.detach().clone() for k, v in weights.items()}
 
-
-
-
     z_layer = hparams.layers[-1]
     z_list = []
     for data in batch_data:
-        
-        cur_z = compute_z(   
+
+        cur_z = compute_z(
             model,
             tok,
             data,
@@ -78,12 +82,12 @@ def apply_AlphaEdit_to_model(
         )
 
         z_list.append(cur_z)
-    zs = torch.stack(z_list, dim=0)#(bs,h_dim)
-    batch_question = [i['question'] for i in batch_data]
-    
+    zs = torch.stack(z_list, dim=0)  # (bs,h_dim)
+    batch_question = [i["question"] for i in batch_data]
+
     # Insert
     for i, layer in enumerate(hparams.layers):
-        #print(f"\n\nLAYER {layer}\n")
+        # print(f"\n\nLAYER {layer}\n")
         contexts_tok = tok(batch_question, padding=True, return_tensors="pt").to(
             next(model.parameters()).device
         )
@@ -97,28 +101,50 @@ def apply_AlphaEdit_to_model(
                 clone=True,
             ) as tr:
                 _ = model(**contexts_tok)
-                layer_in_ks = tr.input #(bs:seq:h_dim)
-                layer_out_ks = tr.output#(bs:seq:h_dim)
+                layer_in_ks = tr.input  # (bs:seq:h_dim)
+                layer_out_ks = tr.output  # (bs:seq:h_dim)
         layer_out_ks = layer_out_ks[0] if type(layer_out_ks) is tuple else layer_out_ks
-        
 
-        cur_zs, idxs = compute_ks(model, tok,batch_question, hparams, z_layer)
+        cur_zs, idxs = compute_ks(model, tok, batch_question, hparams, z_layer)
         targets = zs - cur_zs
         print("z error", torch.linalg.norm(targets, dim=0).mean())
         # ex_tok = tok(ex_data, padding=True, return_tensors="pt").to(
         #     next(model.parameters()).device
         # )
         ks_list = []
-        for i in range(len(idxs)):
-            ks_list.append(layer_in_ks[i,idxs[i]])
+        for k in range(len(idxs)):
+            ks_list.append(layer_in_ks[k, idxs[k]])
         layer_ks = torch.stack(ks_list, dim=1)
 
-
-
         resid = targets / (len(hparams.layers) - i)  # Distribute residual across layers
-        upd_matrix = torch.linalg.solve(
-                P[i,:,:].cuda() @ (layer_ks @ layer_ks.T)  + hparams.L2*torch.eye(layer_ks.shape[0], dtype=torch.float,device="cuda"), P[i,:,:].cuda() @ layer_ks @ resid
-        )
+        # AlphaEdit implementation from AnyEdit's repository
+        # does not use cache_c or K_p(K_p)^T term
+        # assumption: AnyEdit goal is to edit unstructured knowledge
+        # so it might remove the term for simplicity
+        # empirical result: model still collapse anyways with or without cache_c in UnKEBench
+        #
+        # linalg.solve(A, B), resid is not inverted in AnyEdit's repository
+        # because resid shape is (bs, h_dim), not (h_dim, bs) unlike in AlphaEdit's repository
+        # the equation is the same.
+        # note: AlphaEdit and AnyEdit authors are the same people
+        #
+        # AlphaEdit paper state MEMIT also have K_p(K_p)^T term.
+        # however, both in AlphaEdit's repository and AnyEdit's repository
+        # the term is not used. so we will not modify that for fair comparison.
+        if hparams.use_cache_c:
+            upd_matrix = torch.linalg.solve(
+                P[i, :, :].cuda() @ (layer_ks @ layer_ks.T + cache_c[i, :, :].cuda())
+                + hparams.L2
+                * torch.eye(layer_ks.shape[0], dtype=torch.float, device="cuda"),
+                P[i, :, :].cuda() @ layer_ks @ resid,
+            )
+        else:
+            upd_matrix = torch.linalg.solve(
+                P[i, :, :].cuda() @ (layer_ks @ layer_ks.T)
+                + hparams.L2
+                * torch.eye(layer_ks.shape[0], dtype=torch.float, device="cuda"),
+                P[i, :, :].cuda() @ layer_ks @ resid,
+            )
         # Adjust update matrix shape
         weight_name = f"{hparams.rewrite_module_tmp.format(layer)}.weight"
         upd_matrix = upd_matrix_match_shape(upd_matrix, weights[weight_name].shape)
@@ -129,11 +155,39 @@ def apply_AlphaEdit_to_model(
         with torch.no_grad():
             weights[weight_name][...] = weights_copy[weight_name] + upd_matrix.float()
         # Clear GPU memory
-        for x in [layer_ks, cur_zs, targets, layer_in_ks, layer_out_ks,P]:
+        for x in [layer_ks, cur_zs, targets, layer_in_ks, layer_out_ks, P]:
             x.cpu()
             del x
         torch.cuda.empty_cache()
+
+    if hparams.use_cache_c:
+        for i, layer in enumerate(hparams.layers):
+            with torch.no_grad():
+                with nethook.Trace(
+                    module=model,
+                    layer=hparams.rewrite_module_tmp.format(layer),
+                    retain_input=True,
+                    retain_output=True,
+                    detach=True,
+                    clone=True,
+                ) as tr:
+                    _ = model(**contexts_tok)
+                    layer_in_ks = tr.input  # (bs:seq:h_dim)
+                    layer_out_ks = tr.output  # (bs:seq:h_dim)
+            layer_out_ks = layer_out_ks[0] if type(layer_out_ks) is tuple else layer_out_ks
+            cur_zs, idxs = compute_ks(model, tok, batch_question, hparams, z_layer)
+            targets = zs - cur_zs
+            print("z error", torch.linalg.norm(targets, dim=0).mean())
+            # ex_tok = tok(ex_data, padding=True, return_tensors="pt").to(
+            #     next(model.parameters()).device
+            # )
+            ks_list = []
+            for k in range(len(idxs)):
+                ks_list.append(layer_in_ks[k, idxs[k]])
+            layer_ks = torch.stack(ks_list, dim=1)
+            cache_c[i, :, :] += (layer_ks @ layer_ks.T).cpu()
     return weights_copy
+
 
 def get_cov(
     model: AutoModelForCausalLM,
@@ -144,6 +198,7 @@ def get_cov(
     mom2_dtype: str,
     inv: bool = False,
     force_recompute: bool = False,
+    return_count: bool = False,
 ) -> torch.Tensor:
     """
     Retrieves covariance statistics, then computes the algebraic inverse.
@@ -166,11 +221,22 @@ def get_cov(
             precision=mom2_dtype,
             force_recompute=force_recompute,
         )
-        COV_CACHE[key] = stat.mom2.moment().float().to("cpu")
+        if return_count:
+            COV_CACHE[key] = {
+                "mom2": stat.mom2.mom2,
+                "count": stat.mom2.count,
+            }
+        else:
+            COV_CACHE[key] = stat.mom2.moment().float()
 
-    return (
-        torch.inverse(COV_CACHE[key].to("cuda")) if inv else COV_CACHE[key].to("cuda")
-    )
+    if return_count:
+        return COV_CACHE[key]
+    else:
+        return (
+            torch.inverse(COV_CACHE[key]["mom2"].to("cuda"))
+            if inv
+            else COV_CACHE[key]["mom2"].to("cuda")
+        )
 
 
 def upd_matrix_match_shape(matrix: torch.Tensor, shape: torch.Size) -> torch.Tensor:
