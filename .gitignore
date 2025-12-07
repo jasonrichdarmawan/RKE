@@ -3,6 +3,7 @@ __pycache__
 data/stats
 data/stats_*
 .env
+.env_*
 output
 *.pt
 *.log
