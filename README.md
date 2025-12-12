@@ -1,3 +1,11 @@
+## Resources
+
+- Output and logs can be accessed in [HuggingFace]([https://huggingface.co/datasets/jasonrichdarmawan/rke](https://huggingface.co/datasets/jasonrichdarmawan/rke/tree/main/results)).
+- Pre-computed statistics can be accessed in [HuggingFace](https://huggingface.co/datasets/jasonrichdarmawan/rke/tree/main/data).
+
+  Pre-computed statistics are the covariance matrices computed from 100,000 samples. More information can be accessed in [HuggingFace]([https://huggingface.co/datasets/jasonrichdarmawan/rke](https://huggingface.co/datasets/jasonrichdarmawan/rke/blob/main/README.md)).
+- Raw experiment results (in Excel format) can be accessed in [OneDrive](https://1drv.ms/x/c/b6586bc57d0b26e9/IQCHAXKmv36CT4jhkoAA0_psAdiC1RpnNOVhp7xaxR4E14k).
+
 ## Installation
 
 Please install mamba (a package manager) and tmux, then follow the following instructions:
