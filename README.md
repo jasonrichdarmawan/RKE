@@ -1,6 +1,6 @@
 ## Resources
 
-- Output and logs can be accessed in [HuggingFace]([https://huggingface.co/datasets/jasonrichdarmawan/rke](https://huggingface.co/datasets/jasonrichdarmawan/rke/tree/main/results)).
+- Output and logs can be accessed in [HuggingFace](https://huggingface.co/datasets/jasonrichdarmawan/rke/tree/main/results).
 - Pre-computed statistics can be accessed in [HuggingFace](https://huggingface.co/datasets/jasonrichdarmawan/rke/tree/main/data).
 
   Pre-computed statistics are the covariance matrices computed from 100,000 samples. More information can be accessed in [HuggingFace]([https://huggingface.co/datasets/jasonrichdarmawan/rke](https://huggingface.co/datasets/jasonrichdarmawan/rke/blob/main/README.md)).
